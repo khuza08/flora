@@ -18,4 +18,3 @@ rstest = "0.18"
 
 [features]
 default = []
-testing = ["smithay/test-utils"]
