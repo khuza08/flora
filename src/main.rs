@@ -25,6 +25,10 @@ pub struct FloraState {
     pub should_stop: bool,
     pub drm_devices: Vec<PathBuf>,
     pub renderer: Option<GlowRenderer>,
+    // Backend storage to keep them alive
+    pub _drm_device: Option<DrmDevice>,
+    pub _gbm_device: Option<GbmDevice<DrmDeviceFd>>,
+    pub _egl_display: Option<EGLDisplay>,
 }
 
 pub struct FloraClientData {
@@ -43,6 +47,9 @@ impl FloraState {
             should_stop: false,
             drm_devices: Vec::new(),
             renderer: None,
+            _drm_device: None,
+            _gbm_device: None,
+            _egl_display: None,
         }
     }
 }
@@ -145,7 +152,8 @@ fn main() -> anyhow::Result<()> {
             let fd = DrmDeviceFd::new(DeviceFd::from(std::os::unix::io::OwnedFd::from(file)));
             
             // Initialize DRM Device
-            let (_drm_device, _notifier) = DrmDevice::new(fd.clone(), true)
+            // Use atomic = false (Legacy DRM) for better compatibility in VM environments
+            let (drm_device, _notifier) = DrmDevice::new(fd.clone(), false)
                 .map_err(|e| anyhow::anyhow!("Failed to initialize DRM device: {}", e))?;
             
             // Initialize GBM Device
@@ -162,6 +170,11 @@ fn main() -> anyhow::Result<()> {
                 .map_err(|e| anyhow::anyhow!("Failed to initialize Glow renderer: {}", e))?;
             
             info!("DRM and Renderer initialized successfully on {:?}", device_path);
+            
+            // Store EVERYTHING to keep it alive
+            state._egl_display = Some(egl_display);
+            state._gbm_device = Some(gbm);
+            state._drm_device = Some(drm_device);
             state.renderer = Some(renderer);
 
             // Note: In a full compositor, we would also:
