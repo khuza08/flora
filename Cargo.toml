@@ -1,0 +1,15 @@
+[package]
+name = "flora"
+version = "26.0.1"
+edition = "2026"
+
+[dependencies]
+smithay = { version = "0.7.0", default-features = false, features = ["backend_drm", "backend_udev", "backend_winit", "backend_x11", "desktop", "renderer_glow", "wayland_frontend"] }
+wayland-server = "0.31"
+calloop = "0.12"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1.0"
+
+[features]
+default = []
