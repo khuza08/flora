@@ -1,14 +1,16 @@
 use smithay::{
     backend::{
         udev::{UdevBackend, UdevEvent},
-        drm::{DrmDevice, DrmDeviceFd},
-        allocator::gbm::GbmDevice,
+        drm::{DrmDevice, DrmDeviceFd, compositor::DrmCompositor},
+        allocator::gbm::{GbmDevice, GbmAllocator},
+        drm::exporter::gbm::GbmFramebufferExporter,
         egl::{EGLDisplay, EGLContext},
         renderer::glow::GlowRenderer,
     },
     reexports::{
         calloop::{EventLoop, Interest, Mode, PostAction},
         wayland_server::{Display, DisplayHandle, Client, backend::ClientData},
+        drm::control::{connector, Device as _},
     },
     utils::DeviceFd,
     wayland::{
@@ -26,9 +28,10 @@ pub struct FloraState {
     pub drm_devices: Vec<PathBuf>,
     pub renderer: Option<GlowRenderer>,
     // Backend storage to keep them alive
-    pub _drm_device: Option<DrmDevice>,
     pub _gbm_device: Option<GbmDevice<DrmDeviceFd>>,
     pub _egl_display: Option<EGLDisplay>,
+    // The compositor that handles rendering to a specific CRT/Connector
+    pub compositor: Option<DrmCompositor<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>>,
 }
 
 pub struct FloraClientData {
@@ -47,9 +50,9 @@ impl FloraState {
             should_stop: false,
             drm_devices: Vec::new(),
             renderer: None,
-            _drm_device: None,
             _gbm_device: None,
             _egl_display: None,
+            compositor: None,
         }
     }
 }
@@ -171,16 +174,74 @@ fn main() -> anyhow::Result<()> {
             
             info!("DRM and Renderer initialized successfully on {:?}", device_path);
             
+            // --- New: Display Enumeration and Compositor Setup ---
+            
+            // 1. Get resources (connectors, crtcs, etc.)
+            let res_handles = drm_device.resource_handles()
+                .map_err(|e| anyhow::anyhow!("Failed to get DRM resource handles: {}", e))?;
+            
+            // 2. Find a connected connector
+            let connector = res_handles.connectors().iter()
+                .find_map(|conn_handle| {
+                    let info = drm_device.get_connector(*conn_handle, false).ok()?;
+                    if info.state() == connector::State::Connected {
+                        Some(*conn_handle)
+                    } else {
+                        None
+                    }
+                })
+                .ok_or_else(|| anyhow::anyhow!("No connected display found!"))?;
+            
+            let conn_info = drm_device.get_connector(connector, false)?;
+            info!("Found connected display: {:?}", conn_info.interface());
+
+            // 3. Get the native mode (resolution)
+            let mode = conn_info.modes()[0];
+            info!("Using mode: {:?}", mode);
+
+            // 4. Find a CRT for this connector
+            let crtc = res_handles.filter_crtcs(conn_info.possible_encoders().iter().flat_map(|e| {
+                drm_device.get_encoder(*e).ok().map(|ei| ei.possible_crtcs())
+            }).fold(0, |acc, x| acc | x)).iter().next()
+                .ok_or_else(|| anyhow::anyhow!("No suitable CRTC found for connector!"))?;
+            
+            info!("Using CRTC: {:?}", crtc);
+
+            // 5. Create Allocator and Exporter
+            let allocator = GbmAllocator::new(gbm.clone(), smithay::backend::allocator::gbm::GbmBufferFlags::RENDERING | smithay::backend::allocator::gbm::GbmBufferFlags::SCANOUT);
+            let exporter = GbmFramebufferExporter::new(gbm.clone(), drm_device.node_id());
+
+            // 6. Create DrmCompositor
+            let compositor = DrmCompositor::new(
+                &dh,
+                drm_device,
+                allocator,
+                exporter,
+                *crtc,
+                mode,
+                connector,
+                None,
+            ).map_err(|e| anyhow::anyhow!("Failed to create DrmCompositor: {}", e))?;
+
             // Store EVERYTHING to keep it alive
             state._egl_display = Some(egl_display);
             state._gbm_device = Some(gbm);
-            state._drm_device = Some(drm_device);
             state.renderer = Some(renderer);
+            state.compositor = Some(compositor);
+            
+            info!("Screen output initialized successfully!");
+        }
 
-            // Note: In a full compositor, we would also:
-            // 1. Enumerate outputs (connectors)
-            // 2. Insert the DRM notifier into the event loop
-            // 3. Create rendering surfaces
+        // --- Rendering Loop ---
+        if let Some(compositor) = state.compositor.as_mut() {
+            if let Some(renderer) = state.renderer.as_mut() {
+               // Render a macOS-like gray background
+               let color = [0.2, 0.2, 0.2, 1.0]; // #333333ish
+               
+               // Use DrmCompositor to render a frame
+               let _ = compositor.render_frame(renderer, &[], color, smithay::backend::drm::compositor::FrameFlags::empty());
+               let _ = compositor.commit_frame();
+            }
         }
 
         event_loop.dispatch(Duration::from_millis(16), &mut state)?;
