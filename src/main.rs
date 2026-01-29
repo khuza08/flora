@@ -86,6 +86,15 @@ fn main() -> anyhow::Result<()> {
     // 5. Initialize Udev Backend (to detect displays in VM)
     // Use "seat0" as it is the standard on Arch Linux
     let udev = UdevBackend::new("seat0")?;
+    
+    // Scan for existing devices since Added events only trigger for new hotplugged devices
+    for (_device_id, path) in udev.device_list() {
+        info!("Existing device detected: {:?}", path);
+        if path.to_string_lossy().contains("card") || path.to_string_lossy().contains("render") {
+            state.drm_devices.push(path.to_path_buf());
+        }
+    }
+
     handle.insert_source(udev, |event, _, state| {
         match event {
             UdevEvent::Added { device_id: _, path } => {
