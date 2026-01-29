@@ -38,7 +38,7 @@ impl FloraState {
     }
 }
 
-// Implementasi trait dasar Smithay
+// Basic Smithay trait implementation
 impl CompositorHandler for FloraState {
     fn compositor_state(&mut self) -> &mut CompositorState {
         &mut self.compositor_state
@@ -48,59 +48,59 @@ impl CompositorHandler for FloraState {
         &client.get_data::<FloraClientData>().unwrap().compositor_state
     }
 
-    // Callback saat client membuat surface baru
+    // Callback when a client commits a new surface
     fn commit(&mut self, _surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface) {}
 }
 
-// Makro delegate untuk menghubungkan FloraState dengan Smithay
+// Delegate macro to connect FloraState with Smithay
 smithay::delegate_compositor!(FloraState);
 
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().init();
-    info!("Flora: Memulai Compositor macOS-like...");
+    info!("Flora: Starting macOS-like Compositor...");
 
-    // 1. Siapkan Event Loop
+    // 1. Setup Event Loop
     let mut event_loop: EventLoop<FloraState> = EventLoop::try_new()?;
     let handle = event_loop.handle();
     
-    // 2. Siapkan Wayland Display
+    // 2. Setup Wayland Display
     let display = Display::new()?;
     let dh = display.handle();
     
-    // 3. Inisialisasi State
+    // 3. Initialize State
     let mut state = FloraState::new(&dh);
     
-    // 4. Siapkan Socket Wayland
+    // 4. Setup Wayland Socket
     let source = ListeningSocketSource::new_auto()?;
     let socket_name = source.socket_name().to_os_string();
-    info!("Flora aktif! Socket Name: {:?}", socket_name);
+    info!("Flora active! Socket Name: {:?}", socket_name);
 
     handle.insert_source(source, |client_stream, _, state| {
         let client_data = FloraClientData {
             compositor_state: CompositorClientState::default(),
         };
         let _ = state.display_handle.insert_client(client_stream, Arc::new(client_data));
-        info!("Client baru terhubung!");
-    }).map_err(|_e| anyhow::anyhow!("Gagal memasukkan source socket"))?;
+        info!("New client connected!");
+    }).map_err(|_e| anyhow::anyhow!("Failed to insert socket source"))?;
 
-    // 5. Inisialisasi Udev Backend (untuk mendeteksi display di VM)
-    // Gunakan "seat0" karena itu adalah standar di Arch Linux
+    // 5. Initialize Udev Backend (to detect displays in VM)
+    // Use "seat0" as it is the standard on Arch Linux
     let udev = UdevBackend::new("seat0")?;
     handle.insert_source(udev, |event, _, state| {
         match event {
             UdevEvent::Added { device_id: _, path } => {
-                info!("Perangkat baru terdeteksi: {:?}", path);
-                // Simpan jika ini adalah perangkat DRM (kartu grafis)
+                info!("New device detected: {:?}", path);
+                // Save if this is a DRM device (graphics card)
                 if path.to_string_lossy().contains("card") || path.to_string_lossy().contains("render") {
                     state.drm_devices.push(path);
                 }
             },
-            UdevEvent::Changed { device_id: _ } => info!("Perangkat berubah"),
-            UdevEvent::Removed { device_id: _ } => info!("Perangkat dihapus"),
+            UdevEvent::Changed { device_id: _ } => info!("Device changed"),
+            UdevEvent::Removed { device_id: _ } => info!("Device removed"),
         }
-    }).map_err(|_e| anyhow::anyhow!("Gagal memasukkan source udev"))?;
+    }).map_err(|_e| anyhow::anyhow!("Failed to insert udev source"))?;
 
-    // Masukkan Wayland Display ke event loop
+    // Insert Wayland Display into event loop
     handle.insert_source(
         smithay::reexports::calloop::generic::Generic::new(display, Interest::READ, Mode::Level),
         |_, display, state| {
@@ -108,17 +108,17 @@ fn main() -> anyhow::Result<()> {
                 display.get_mut().dispatch_clients(state).map(|_| PostAction::Continue)
             }
         },
-    ).map_err(|_e| anyhow::anyhow!("Gagal memasukkan source display"))?;
+    ).map_err(|_e| anyhow::anyhow!("Failed to insert display source"))?;
 
-    // 6. Jalankan Loop
-    info!("Flora Loop dimulai. Menunggu hardware grafis...");
+    // 6. Run Loop
+    info!("Flora Loop started. Waiting for graphics hardware...");
     while !state.should_stop {
-        // Jika ada perangkat DRM yang ditemukan tapi belum diinisialisasi, kita bisa inisialisasi di sini
-        // (Untuk saat ini kita hanya log, implementasi rendering penuh akan menyusul di langkah berikutnya)
+        // If a DRM device is found but not yet initialized, we can initialize it here
+        // (For now we only log, full rendering implementation will follow in the next step)
         if !state.drm_devices.is_empty() {
              let device = state.drm_devices.pop().unwrap();
-             info!("Mencoba inisialisasi DRM pada: {:?}", device);
-             // Di sini nantinya kita akan panggil DrmBackend::new
+             info!("Attempting to initialize DRM on: {:?}", device);
+             // Full DRM initialization will be implemented here
         }
 
         event_loop.dispatch(Duration::from_millis(16), &mut state)?;
