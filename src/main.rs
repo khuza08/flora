@@ -25,13 +25,14 @@ fn main() -> anyhow::Result<()> {
     info!("Flora aktif! Mendengarkan di: {:?}", socket_name);
 
     // Masukkan source socket ke event loop
-    handle.insert_source(source, |client_stream, _, _state| {
+    handle.insert_source(source, |_client_stream, _, _state| {
         // Di sini kita akan handle pendaftaran client nanti
         info!("Client baru mencoba terhubung!");
     })?;
 
     // 4. Jalankan Loop Selamanya
     loop {
+        let _ = display.dispatch_clients(&mut ());
         event_loop.dispatch(Duration::from_millis(16), &mut ())?;
     }
 }
