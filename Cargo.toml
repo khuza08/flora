@@ -11,5 +11,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1.0"
 
+[dev-dependencies]
+wayland-client = "0.31"
+tempfile = "3"
+rstest = "0.18"
+
 [features]
 default = []
+testing = ["smithay/test-utils"]
