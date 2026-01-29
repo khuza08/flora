@@ -341,13 +341,21 @@ fn main() -> anyhow::Result<()> {
             let renderer_formats = renderer.dmabuf_formats();
 
             // 8. Create DrmCompositor (9 arguments for Smithay 0.7.0)
+            // Multiple formats for virtual GPU compatibility
+            let color_formats = vec![
+                Fourcc::Xrgb8888,  // Most compatible - no alpha
+                Fourcc::Argb8888,  // ARGB with alpha
+                Fourcc::Xbgr8888,  // BGR variant
+                Fourcc::Abgr8888,  // ABGR variant
+            ];
+            
             let compositor = DrmCompositor::new(
                 output_mode_source,
                 surface,
                 None, // planes
                 allocator,
                 exporter,
-                vec![Fourcc::Abgr8888], // color_formats
+                color_formats,
                 renderer_formats,
                 Size::from((64, 64)), // cursor_size
                 Some(gbm.clone()), // gbm
