@@ -18,3 +18,5 @@ rstest = "0.18"
 
 [features]
 default = []
+udev = ["smithay/backend_udev"]
+backend_drm = ["smithay/backend_drm"]
