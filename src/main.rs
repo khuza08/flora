@@ -84,7 +84,8 @@ fn main() -> anyhow::Result<()> {
     }).map_err(|_e| anyhow::anyhow!("Gagal memasukkan source socket"))?;
 
     // 5. Inisialisasi Udev Backend (untuk mendeteksi display di VM)
-    let udev = UdevBackend::new("flora")?;
+    // Gunakan "seat0" karena itu adalah standar di Arch Linux
+    let udev = UdevBackend::new("seat0")?;
     handle.insert_source(udev, |event, _, state| {
         match event {
             UdevEvent::Added { device_id: _, path } => {
