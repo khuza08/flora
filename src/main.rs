@@ -2,21 +2,32 @@ use smithay::{
     backend::{
         udev::{UdevBackend, UdevEvent},
         drm::{DrmDevice, DrmDeviceFd, compositor::DrmCompositor},
-        allocator::gbm::{GbmDevice, GbmAllocator},
+        allocator::{gbm::{GbmDevice, GbmAllocator}, Fourcc},
         drm::exporter::gbm::GbmFramebufferExporter,
         egl::{EGLDisplay, EGLContext},
-        renderer::glow::GlowRenderer,
+        renderer::{
+            glow::GlowRenderer,
+            ImportDma,
+        },
     },
+    output::OutputModeSource,
     reexports::{
         calloop::{EventLoop, Interest, Mode, PostAction},
         wayland_server::{Display, DisplayHandle, Client, backend::ClientData},
         drm::control::{connector, Device as _},
+        input as smithay_input,
     },
-    utils::DeviceFd,
+    utils::{DeviceFd, Transform, Size, Scale},
     wayland::{
         compositor::{CompositorState, CompositorHandler, CompositorClientState},
         socket::ListeningSocketSource,
     },
+    input::{SeatState, SeatHandler, Seat},
+    backend::input::{
+        InputEvent, Event,
+        KeyboardKeyEvent, PointerMotionEvent, PointerButtonEvent, PointerAxisEvent,
+    },
+    backend::libinput::LibinputInputBackend,
 };
 use tracing::info;
 use std::{time::Duration, sync::Arc, path::PathBuf, fs::OpenOptions};
@@ -24,6 +35,8 @@ use std::{time::Duration, sync::Arc, path::PathBuf, fs::OpenOptions};
 pub struct FloraState {
     pub display_handle: DisplayHandle,
     pub compositor_state: CompositorState,
+    pub seat_state: SeatState<Self>,
+    pub seat: Seat<Self>,
     pub should_stop: bool,
     pub drm_devices: Vec<PathBuf>,
     pub renderer: Option<GlowRenderer>,
@@ -32,6 +45,22 @@ pub struct FloraState {
     pub _egl_display: Option<EGLDisplay>,
     // The compositor that handles rendering to a specific CRT/Connector
     pub compositor: Option<DrmCompositor<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>>,
+}
+
+use smithay::delegate_seat;
+delegate_seat!(FloraState);
+
+impl SeatHandler for FloraState {
+    type KeyboardFocus = smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+    type PointerFocus = smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+    type TouchFocus = smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+
+    fn seat_state(&mut self) -> &mut SeatState<Self> {
+        &mut self.seat_state
+    }
+
+    fn focus_changed(&mut self, _seat: &Seat<Self>, _focused: Option<&Self::KeyboardFocus>) {}
+    fn cursor_image(&mut self, _seat: &Seat<Self>, _image: smithay::input::pointer::CursorImageStatus) {}
 }
 
 pub struct FloraClientData {
@@ -43,10 +72,14 @@ impl ClientData for FloraClientData {}
 impl FloraState {
     pub fn new(dh: &DisplayHandle) -> Self {
         let compositor_state = CompositorState::new::<Self>(dh);
+        let mut seat_state = SeatState::new();
+        let seat = seat_state.new_seat("seat0");
 
         Self {
             display_handle: dh.clone(),
             compositor_state,
+            seat_state,
+            seat,
             should_stop: false,
             drm_devices: Vec::new(),
             renderer: None,
@@ -73,6 +106,23 @@ impl CompositorHandler for FloraState {
 
 // Delegate macro to connect FloraState with Smithay
 smithay::delegate_compositor!(FloraState);
+
+struct FloraLibinputInterface;
+
+impl smithay_input::LibinputInterface for FloraLibinputInterface {
+    fn open_restricted(&mut self, path: &std::path::Path, _flags: i32) -> Result<std::os::unix::io::OwnedFd, i32> {
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .map(|f| f.into())
+            .map_err(|err| err.raw_os_error().unwrap_or(1))
+    }
+
+    fn close_restricted(&mut self, fd: std::os::unix::io::OwnedFd) {
+        drop(fd);
+    }
+}
 
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().init();
@@ -128,7 +178,6 @@ fn main() -> anyhow::Result<()> {
         }
     }).map_err(|_e| anyhow::anyhow!("Failed to insert udev source"))?;
 
-    // Insert Wayland Display into event loop
     handle.insert_source(
         smithay::reexports::calloop::generic::Generic::new(display, Interest::READ, Mode::Level),
         |_, display, state| {
@@ -137,6 +186,93 @@ fn main() -> anyhow::Result<()> {
             }
         },
     ).map_err(|_e| anyhow::anyhow!("Failed to insert display source"))?;
+
+    // 6. Initialize Libinput
+    let mut libinput_context = smithay_input::Libinput::new_with_udev(
+        FloraLibinputInterface,
+    );
+    libinput_context.udev_assign_seat("seat0").map_err(|_| anyhow::anyhow!("Failed to assign seat to libinput"))?;
+    let libinput_backend = LibinputInputBackend::new(libinput_context);
+
+    state.seat.add_keyboard(Default::default(), 200, 25)
+        .map_err(|_| anyhow::anyhow!("Failed to add keyboard to seat"))?;
+    state.seat.add_pointer();
+
+    handle.insert_source(libinput_backend, |event, _, state| {
+        match event {
+            InputEvent::Keyboard { event, .. } => {
+                let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+                let time = event.time_msec();
+                if let Some(keyboard) = state.seat.get_keyboard() {
+                    keyboard.input(
+                        state,
+                        event.key_code(),
+                        event.state(),
+                        serial,
+                        time,
+                        |_, _, _| smithay::input::keyboard::FilterResult::<()>::Forward,
+                    );
+                }
+            }
+            InputEvent::PointerMotion { event, .. } => {
+                if let Some(ptr) = state.seat.get_pointer() {
+                    let mut location = ptr.current_location();
+                    location += (event.delta_x(), event.delta_y()).into();
+                    
+                    let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+                    ptr.motion(
+                        state,
+                        None,
+                        &smithay::input::pointer::MotionEvent {
+                            location,
+                            serial,
+                            time: event.time_msec(),
+                        }
+                    );
+                    ptr.frame(state);
+                }
+            }
+            InputEvent::PointerButton { event, .. } => {
+                if let Some(ptr) = state.seat.get_pointer() {
+                   let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+                   ptr.button(
+                       state,
+                       &smithay::input::pointer::ButtonEvent {
+                           button: event.button_code(),
+                           state: event.state(),
+                           serial,
+                           time: event.time_msec(),
+                       }
+                   );
+                   ptr.frame(state);
+                }
+            }
+            InputEvent::PointerAxis { event, .. } => {
+                if let Some(ptr) = state.seat.get_pointer() {
+                    let mut frame = smithay::input::pointer::AxisFrame::new(event.time_msec());
+                    if let Some(v) = event.amount(smithay::backend::input::Axis::Vertical) {
+                        frame.axis = (frame.axis.0, v);
+                        if let Some(v120) = event.amount_v120(smithay::backend::input::Axis::Vertical) {
+                            let mut v120_frame = frame.v120.unwrap_or((0, 0));
+                            v120_frame.1 = v120 as i32;
+                            frame.v120 = Some(v120_frame);
+                        }
+                    }
+                    if let Some(h) = event.amount(smithay::backend::input::Axis::Horizontal) {
+                        frame.axis = (h, frame.axis.1);
+                        if let Some(h120) = event.amount_v120(smithay::backend::input::Axis::Horizontal) {
+                            let mut v120_frame = frame.v120.unwrap_or((0, 0));
+                            v120_frame.0 = h120 as i32;
+                            frame.v120 = Some(v120_frame);
+                        }
+                    }
+                    ptr.axis(state, frame);
+                    ptr.frame(state);
+                }
+            }
+            _ => {}
+        }
+    }).map_err(|_e| anyhow::anyhow!("Failed to insert libinput source"))?;
 
     // 6. Run Loop
     info!("Flora Loop started. Waiting for graphics hardware...");
@@ -156,7 +292,7 @@ fn main() -> anyhow::Result<()> {
             
             // Initialize DRM Device
             // Use atomic = false (Legacy DRM) for better compatibility in VM environments
-            let (drm_device, _notifier) = DrmDevice::new(fd.clone(), false)
+            let (mut drm_device, _notifier) = DrmDevice::new(fd.clone(), false)
                 .map_err(|e| anyhow::anyhow!("Failed to initialize DRM device: {}", e))?;
             
             // Initialize GBM Device
@@ -200,27 +336,44 @@ fn main() -> anyhow::Result<()> {
             info!("Using mode: {:?}", mode);
 
             // 4. Find a CRT for this connector
-            let crtc = res_handles.filter_crtcs(conn_info.possible_encoders().iter().flat_map(|e| {
-                drm_device.get_encoder(*e).ok().map(|ei| ei.possible_crtcs())
-            }).fold(0, |acc, x| acc | x)).iter().next()
+            let crtc = conn_info.encoders().iter()
+                .find_map(|&encoder_handle| {
+                    let encoder_info = drm_device.get_encoder(encoder_handle).ok()?;
+                    res_handles.filter_crtcs(encoder_info.possible_crtcs()).iter().next().copied()
+                })
                 .ok_or_else(|| anyhow::anyhow!("No suitable CRTC found for connector!"))?;
             
             info!("Using CRTC: {:?}", crtc);
 
-            // 5. Create Allocator and Exporter
-            let allocator = GbmAllocator::new(gbm.clone(), smithay::backend::allocator::gbm::GbmBufferFlags::RENDERING | smithay::backend::allocator::gbm::GbmBufferFlags::SCANOUT);
-            let exporter = GbmFramebufferExporter::new(gbm.clone(), drm_device.node_id());
+            // 5. Create DrmSurface
+            let surface = drm_device.create_surface(crtc, mode, &[connector])
+                .map_err(|e| anyhow::anyhow!("Failed to create DrmSurface: {}", e))?;
 
-            // 6. Create DrmCompositor
+            // 6. Create Allocator and Exporter
+            let allocator = GbmAllocator::new(gbm.clone(), smithay::backend::allocator::gbm::GbmBufferFlags::RENDERING | smithay::backend::allocator::gbm::GbmBufferFlags::SCANOUT);
+            let exporter = GbmFramebufferExporter::new(gbm.clone(), None);
+
+            // 7. Prepare DrmCompositor Arguments
+            let (w, h) = mode.size();
+            let output_mode_source = OutputModeSource::Static {
+                size: Size::from((w as i32, h as i32)),
+                scale: Scale::from(1.0),
+                transform: Transform::Normal,
+            };
+            
+            let renderer_formats = renderer.dmabuf_formats();
+
+            // 8. Create DrmCompositor (9 arguments for Smithay 0.7.0)
             let compositor = DrmCompositor::new(
-                &dh,
-                drm_device,
+                output_mode_source,
+                surface,
+                None, // planes
                 allocator,
                 exporter,
-                *crtc,
-                mode,
-                connector,
-                None,
+                vec![Fourcc::Abgr8888], // color_formats
+                renderer_formats,
+                Size::from((64, 64)), // cursor_size
+                Some(gbm.clone()), // gbm
             ).map_err(|e| anyhow::anyhow!("Failed to create DrmCompositor: {}", e))?;
 
             // Store EVERYTHING to keep it alive
@@ -238,9 +391,14 @@ fn main() -> anyhow::Result<()> {
                // Render a macOS-like gray background
                let color = [0.2, 0.2, 0.2, 1.0]; // #333333ish
                
-               // Use DrmCompositor to render a frame
-               let _ = compositor.render_frame(renderer, &[], color, smithay::backend::drm::compositor::FrameFlags::empty());
-               let _ = compositor.commit_frame();
+                // Use DrmCompositor to render a frame
+                let _ = compositor.render_frame::<GlowRenderer, smithay::backend::renderer::gles::element::TextureShaderElement>(
+                    renderer,
+                    &[],
+                    color,
+                    smithay::backend::drm::compositor::FrameFlags::empty(),
+                );
+                let _ = compositor.commit_frame();
             }
         }
 
