@@ -243,92 +243,102 @@ fn main() -> anyhow::Result<()> {
         },
     ).map_err(|_e| anyhow::anyhow!("Failed to insert display source"))?;
 
-    // 6. Initialize Libinput
-    let mut libinput_context = smithay_input::Libinput::new_with_udev(
-        FloraLibinputInterface,
-    );
-    libinput_context.udev_assign_seat("seat0").map_err(|_| anyhow::anyhow!("Failed to assign seat to libinput"))?;
-    let libinput_backend = LibinputInputBackend::new(libinput_context);
-
+    // 6. Initialize Libinput (optional - may fail in QEMU without input devices)
     state.seat.add_keyboard(Default::default(), 200, 25)
         .map_err(|_| anyhow::anyhow!("Failed to add keyboard to seat"))?;
     state.seat.add_pointer();
 
-    handle.insert_source(libinput_backend, |event, _, state| {
-        match event {
-            InputEvent::Keyboard { event, .. } => {
-                let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-                let time = event.time_msec();
-                if let Some(keyboard) = state.seat.get_keyboard() {
-                    keyboard.input(
-                        state,
-                        event.key_code(),
-                        event.state(),
-                        serial,
-                        time,
-                        |_, _, _| smithay::input::keyboard::FilterResult::<()>::Forward,
-                    );
-                }
-            }
-            InputEvent::PointerMotion { event, .. } => {
-                if let Some(ptr) = state.seat.get_pointer() {
-                    let mut location = ptr.current_location();
-                    location += (event.delta_x(), event.delta_y()).into();
-                    
-                    let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-                    ptr.motion(
-                        state,
-                        None,
-                        &smithay::input::pointer::MotionEvent {
-                            location,
-                            serial,
-                            time: event.time_msec(),
+    // Try to initialize libinput, but don't fail if it doesn't work (QEMU compatibility)
+    match smithay_input::Libinput::new_with_udev(FloraLibinputInterface) {
+        li => {
+            let mut libinput_context = li;
+            if libinput_context.udev_assign_seat("seat0").is_ok() {
+                let libinput_backend = LibinputInputBackend::new(libinput_context);
+                if handle.insert_source(libinput_backend, |event, _, state| {
+                    match event {
+                        InputEvent::Keyboard { event, .. } => {
+                            let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+                            let time = event.time_msec();
+                            if let Some(keyboard) = state.seat.get_keyboard() {
+                                keyboard.input(
+                                    state,
+                                    event.key_code(),
+                                    event.state(),
+                                    serial,
+                                    time,
+                                    |_, _, _| smithay::input::keyboard::FilterResult::<()>::Forward,
+                                );
+                            }
                         }
-                    );
-                    ptr.frame(state);
-                }
-            }
-            InputEvent::PointerButton { event, .. } => {
-                if let Some(ptr) = state.seat.get_pointer() {
-                   let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-                   ptr.button(
-                       state,
-                       &smithay::input::pointer::ButtonEvent {
-                           button: event.button_code(),
-                           state: event.state(),
-                           serial,
-                           time: event.time_msec(),
-                       }
-                   );
-                   ptr.frame(state);
-                }
-            }
-            InputEvent::PointerAxis { event, .. } => {
-                if let Some(ptr) = state.seat.get_pointer() {
-                    let mut frame = smithay::input::pointer::AxisFrame::new(event.time_msec());
-                    if let Some(v) = event.amount(smithay::backend::input::Axis::Vertical) {
-                        frame.axis = (frame.axis.0, v);
-                        if let Some(v120) = event.amount_v120(smithay::backend::input::Axis::Vertical) {
-                            let mut v120_frame = frame.v120.unwrap_or((0, 0));
-                            v120_frame.1 = v120 as i32;
-                            frame.v120 = Some(v120_frame);
+                        InputEvent::PointerMotion { event, .. } => {
+                            if let Some(ptr) = state.seat.get_pointer() {
+                                let mut location = ptr.current_location();
+                                location += (event.delta_x(), event.delta_y()).into();
+                                
+                                let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+                                ptr.motion(
+                                    state,
+                                    None,
+                                    &smithay::input::pointer::MotionEvent {
+                                        location,
+                                        serial,
+                                        time: event.time_msec(),
+                                    }
+                                );
+                                ptr.frame(state);
+                            }
                         }
+                        InputEvent::PointerButton { event, .. } => {
+                            if let Some(ptr) = state.seat.get_pointer() {
+                               let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+                               ptr.button(
+                                   state,
+                                   &smithay::input::pointer::ButtonEvent {
+                                       button: event.button_code(),
+                                       state: event.state(),
+                                       serial,
+                                       time: event.time_msec(),
+                                   }
+                               );
+                               ptr.frame(state);
+                            }
+                        }
+                        InputEvent::PointerAxis { event, .. } => {
+                            if let Some(ptr) = state.seat.get_pointer() {
+                                let mut frame = smithay::input::pointer::AxisFrame::new(event.time_msec());
+                                if let Some(v) = event.amount(smithay::backend::input::Axis::Vertical) {
+                                    frame.axis = (frame.axis.0, v);
+                                    if let Some(v120) = event.amount_v120(smithay::backend::input::Axis::Vertical) {
+                                        let mut v120_frame = frame.v120.unwrap_or((0, 0));
+                                        v120_frame.1 = v120 as i32;
+                                        frame.v120 = Some(v120_frame);
+                                    }
+                                }
+                                if let Some(h) = event.amount(smithay::backend::input::Axis::Horizontal) {
+                                    frame.axis = (h, frame.axis.1);
+                                    if let Some(h120) = event.amount_v120(smithay::backend::input::Axis::Horizontal) {
+                                        let mut v120_frame = frame.v120.unwrap_or((0, 0));
+                                        v120_frame.0 = h120 as i32;
+                                        frame.v120 = Some(v120_frame);
+                                    }
+                                }
+                                ptr.axis(state, frame);
+                                ptr.frame(state);
+                            }
+                        }
+                        _ => {}
                     }
-                    if let Some(h) = event.amount(smithay::backend::input::Axis::Horizontal) {
-                        frame.axis = (h, frame.axis.1);
-                        if let Some(h120) = event.amount_v120(smithay::backend::input::Axis::Horizontal) {
-                            let mut v120_frame = frame.v120.unwrap_or((0, 0));
-                            v120_frame.0 = h120 as i32;
-                            frame.v120 = Some(v120_frame);
-                        }
-                    }
-                    ptr.axis(state, frame);
-                    ptr.frame(state);
+                }).is_ok() {
+                    info!("Libinput initialized successfully");
+                } else {
+                    info!("Libinput source insertion failed, continuing without input");
                 }
+            } else {
+                info!("Libinput seat assignment failed, continuing without input");
             }
-            _ => {}
         }
-    }).map_err(|_e| anyhow::anyhow!("Failed to insert libinput source"))?;
+    }
+
 
     // 6. Run Loop
     info!("Flora Loop started. Waiting for graphics hardware...");
