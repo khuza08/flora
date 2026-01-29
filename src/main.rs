@@ -17,7 +17,7 @@ fn main() -> anyhow::Result<()> {
     let handle = event_loop.handle();
     
     // 2. Siapkan Wayland Display
-    let display: Display<()> = Display::new()?;
+    let mut display: Display<()> = Display::new()?;
     
     // 3. Siapkan Socket Wayland
     let source = ListeningSocketSource::new_auto()?;
