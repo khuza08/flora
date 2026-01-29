@@ -1,22 +1,30 @@
 use smithay::{
-    backend::udev::{UdevBackend, UdevEvent},
+    backend::{
+        udev::{UdevBackend, UdevEvent},
+        drm::{DrmDevice, DrmDeviceFd},
+        allocator::gbm::GbmDevice,
+        egl::{EGLDisplay, EGLContext},
+        renderer::glow::GlowRenderer,
+    },
     reexports::{
         calloop::{EventLoop, Interest, Mode, PostAction},
         wayland_server::{Display, DisplayHandle, Client, backend::ClientData},
     },
+    utils::DeviceFd,
     wayland::{
         compositor::{CompositorState, CompositorHandler, CompositorClientState},
         socket::ListeningSocketSource,
     },
 };
 use tracing::info;
-use std::{time::Duration, sync::Arc, path::PathBuf};
+use std::{time::Duration, sync::Arc, path::PathBuf, fs::OpenOptions};
 
 pub struct FloraState {
     pub display_handle: DisplayHandle,
     pub compositor_state: CompositorState,
     pub should_stop: bool,
     pub drm_devices: Vec<PathBuf>,
+    pub renderer: Option<GlowRenderer>,
 }
 
 pub struct FloraClientData {
@@ -34,6 +42,7 @@ impl FloraState {
             compositor_state,
             should_stop: false,
             drm_devices: Vec::new(),
+            renderer: None,
         }
     }
 }
@@ -122,12 +131,43 @@ fn main() -> anyhow::Result<()> {
     // 6. Run Loop
     info!("Flora Loop started. Waiting for graphics hardware...");
     while !state.should_stop {
-        // If a DRM device is found but not yet initialized, we can initialize it here
-        // (For now we only log, full rendering implementation will follow in the next step)
-        if !state.drm_devices.is_empty() {
-             let device = state.drm_devices.pop().unwrap();
-             info!("Attempting to initialize DRM on: {:?}", device);
-             // Full DRM initialization will be implemented here
+        if state.renderer.is_none() && !state.drm_devices.is_empty() {
+            let device_path = state.drm_devices.pop().unwrap();
+            info!("Attempting to initialize DRM on: {:?}", device_path);
+
+            // Open the DRM device
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .append(true)
+                .open(&device_path)?;
+            
+            let fd = DrmDeviceFd::new(DeviceFd::from(std::os::unix::io::OwnedFd::from(file)));
+            
+            // Initialize DRM Device
+            let (_drm_device, _notifier) = DrmDevice::new(fd.clone(), true)
+                .map_err(|e| anyhow::anyhow!("Failed to initialize DRM device: {}", e))?;
+            
+            // Initialize GBM Device
+            let gbm = GbmDevice::new(fd)
+                .map_err(|e| anyhow::anyhow!("Failed to initialize GBM device: {}", e))?;
+            
+            // Initialize EGL and Renderer
+            let egl_display = unsafe { EGLDisplay::new(gbm.clone()) }
+                .map_err(|e| anyhow::anyhow!("Failed to create EGL display: {}", e))?;
+            let egl_context = EGLContext::new(&egl_display)
+                .map_err(|e| anyhow::anyhow!("Failed to create EGL context: {}", e))?;
+            
+            let renderer = unsafe { GlowRenderer::new(egl_context) }
+                .map_err(|e| anyhow::anyhow!("Failed to initialize Glow renderer: {}", e))?;
+            
+            info!("DRM and Renderer initialized successfully on {:?}", device_path);
+            state.renderer = Some(renderer);
+
+            // Note: In a full compositor, we would also:
+            // 1. Enumerate outputs (connectors)
+            // 2. Insert the DRM notifier into the event loop
+            // 3. Create rendering surfaces
         }
 
         event_loop.dispatch(Duration::from_millis(16), &mut state)?;
