@@ -33,7 +33,7 @@ use smithay::{
     backend::libinput::LibinputInputBackend,
 };
 use tracing::info;
-use std::{time::Duration, sync::Arc, path::PathBuf, fs::OpenOptions, process::Command};
+use std::{time::Duration, sync::Arc, path::PathBuf, fs::OpenOptions};
 
 pub struct FloraState {
     pub display_handle: DisplayHandle,
@@ -52,8 +52,6 @@ pub struct FloraState {
     pub compositor: Option<DrmCompositor<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>>,
     // Toplevel surfaces for rendering
     pub toplevels: Vec<ToplevelSurface>,
-    // Track if we already spawned a terminal
-    pub terminal_spawned: bool,
 }
 
 use smithay::delegate_seat;
@@ -100,7 +98,6 @@ impl FloraState {
             _egl_display: None,
             compositor: None,
             toplevels: Vec::new(),
-            terminal_spawned: false,
         }
     }
 }
@@ -368,23 +365,6 @@ fn main() -> anyhow::Result<()> {
             state.compositor = Some(compositor);
             
             info!("Screen output initialized successfully!");
-
-            // Auto-spawn foot terminal after graphics are ready
-            if !state.terminal_spawned {
-                state.terminal_spawned = true;
-                let socket_name = socket_name.clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(Duration::from_millis(500)); // Wait for compositor to be ready
-                    info!("Spawning foot terminal...");
-                    let result = Command::new("foot")
-                        .env("WAYLAND_DISPLAY", &socket_name)
-                        .spawn();
-                    match result {
-                        Ok(_) => info!("foot terminal spawned successfully"),
-                        Err(e) => info!("Failed to spawn foot: {}. Trying weston-terminal...", e),
-                    }
-                });
-            }
         }
 
         // --- Rendering Loop ---
