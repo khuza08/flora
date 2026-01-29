@@ -21,6 +21,9 @@ use smithay::{
     wayland::{
         compositor::{CompositorState, CompositorHandler, CompositorClientState},
         socket::ListeningSocketSource,
+        shell::xdg::{XdgShellState, XdgShellHandler, ToplevelSurface, PopupSurface, PositionerState},
+        shm::{ShmState, ShmHandler},
+        buffer::BufferHandler,
     },
     input::{SeatState, SeatHandler, Seat},
     backend::input::{
@@ -35,6 +38,8 @@ use std::{time::Duration, sync::Arc, path::PathBuf, fs::OpenOptions};
 pub struct FloraState {
     pub display_handle: DisplayHandle,
     pub compositor_state: CompositorState,
+    pub xdg_shell_state: XdgShellState,
+    pub shm_state: ShmState,
     pub seat_state: SeatState<Self>,
     pub seat: Seat<Self>,
     pub should_stop: bool,
@@ -45,6 +50,8 @@ pub struct FloraState {
     pub _egl_display: Option<EGLDisplay>,
     // The compositor that handles rendering to a specific CRT/Connector
     pub compositor: Option<DrmCompositor<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>>,
+    // Toplevel surfaces for rendering
+    pub toplevels: Vec<ToplevelSurface>,
 }
 
 use smithay::delegate_seat;
@@ -72,12 +79,16 @@ impl ClientData for FloraClientData {}
 impl FloraState {
     pub fn new(dh: &DisplayHandle) -> Self {
         let compositor_state = CompositorState::new::<Self>(dh);
+        let xdg_shell_state = XdgShellState::new::<Self>(dh);
+        let shm_state = ShmState::new::<Self>(dh, vec![]);
         let mut seat_state = SeatState::new();
         let seat = seat_state.new_seat("seat0");
 
         Self {
             display_handle: dh.clone(),
             compositor_state,
+            xdg_shell_state,
+            shm_state,
             seat_state,
             seat,
             should_stop: false,
@@ -86,6 +97,7 @@ impl FloraState {
             _gbm_device: None,
             _egl_display: None,
             compositor: None,
+            toplevels: Vec::new(),
         }
     }
 }
@@ -106,6 +118,47 @@ impl CompositorHandler for FloraState {
 
 // Delegate macro to connect FloraState with Smithay
 smithay::delegate_compositor!(FloraState);
+
+// XdgShell Handler - enables window creation
+impl XdgShellHandler for FloraState {
+    fn xdg_shell_state(&mut self) -> &mut XdgShellState {
+        &mut self.xdg_shell_state
+    }
+
+    fn new_toplevel(&mut self, surface: ToplevelSurface) {
+        // Configure the toplevel with a reasonable default size
+        surface.with_pending_state(|state| {
+            state.size = Some((800, 600).into());
+        });
+        surface.send_configure();
+        self.toplevels.push(surface);
+        info!("New toplevel surface created");
+    }
+
+    fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
+        surface.send_configure().ok();
+    }
+
+    fn grab(&mut self, _surface: PopupSurface, _seat: smithay::reexports::wayland_server::protocol::wl_seat::WlSeat, _serial: smithay::utils::Serial) {}
+    fn reposition_request(&mut self, _surface: PopupSurface, _positioner: PositionerState, _token: u32) {}
+}
+
+smithay::delegate_xdg_shell!(FloraState);
+
+// Shm Handler - enables shared memory buffers
+impl ShmHandler for FloraState {
+    fn shm_state(&self) -> &ShmState {
+        &self.shm_state
+    }
+}
+
+smithay::delegate_shm!(FloraState);
+
+// Buffer Handler - notifies when buffers are destroyed
+impl BufferHandler for FloraState {
+    fn buffer_destroyed(&mut self, _buffer: &smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer) {}
+}
+
 
 struct FloraLibinputInterface;
 
