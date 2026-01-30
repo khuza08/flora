@@ -47,7 +47,7 @@ use smithay::{
     input::keyboard::FilterResult,
     utils::SERIAL_COUNTER,
 };
-use tracing::info;
+use tracing::{info, warn};
 use std::{time::Duration, sync::Arc, path::PathBuf, fs::OpenOptions};
 
 pub struct FloraState {
@@ -175,7 +175,7 @@ impl FloraState {
         let output = Output::new(
             "Virtual-1".to_string(),
             PhysicalProperties {
-                size: (0, 0).into(), // Unknown physical size for virtual display
+                size: (500, 300).into(),
                 subpixel: Subpixel::Unknown,
                 make: "Flora".to_string(),
                 model: "Virtual Display".to_string(),
@@ -374,9 +374,16 @@ fn main() -> anyhow::Result<()> {
     state.seat.add_pointer();
 
     // Create Libinput backend
+    info!("Initializing Libinput context...");
     let mut libinput_context = smithay::reexports::input::Libinput::new_with_udev(FloraLibinputInterface);
-    libinput_context.udev_assign_seat("seat0").unwrap();
+    
+    info!("Assigning 'seat0' to Libinput...");
+    if let Err(err) = libinput_context.udev_assign_seat("seat0") {
+        warn!("Failed to assign seat0 to Libinput: {:?}", err);
+    }
+    
     let libinput_backend = LibinputInputBackend::new(libinput_context);
+    info!("Libinput backend created.");
 
     handle.insert_source(libinput_backend, |event, _, state| {
         match event {
@@ -388,6 +395,7 @@ fn main() -> anyhow::Result<()> {
             }
             InputEvent::Keyboard { event } => {
                 let keycode = event.key_code();
+                info!("Keyboard event: keycode={:?}, state={:?}", keycode, event.state());
                 let key_state = event.state();
                 let serial = SERIAL_COUNTER.next_serial();
                 let time = event.time() as u32;
