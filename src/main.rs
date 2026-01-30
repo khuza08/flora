@@ -570,75 +570,38 @@ fn main() -> anyhow::Result<()> {
         }
 
         if !input_initialized && state.renderer.is_some() {
-            info!("Graphics ready, initializing input...");
+            info!("Graphics ready, initializing input (Libinput DISABLED for bypass)...");
             
-            // 6. Initialize Input
+            // 6. Initialize Input Protocols
             state.seat.add_keyboard(Default::default(), 200, 25).ok();
             state.seat.add_pointer();
 
+            /* 
+            // Libinput is hanging in this VM, disabled temporarily to verify Wayland
             info!("Input: Initializing Libinput context (Path-based)...");
             let mut libinput_context = smithay::reexports::input::Libinput::new_from_path(FloraLibinputInterface);
             
-            // Manually add devices from by-path to avoid hangs on ACPI virtual devices (event0, event1, etc.)
             info!("Input: Scanning /dev/input/by-path/ for kbd and mouse devices...");
             if let Ok(entries) = std::fs::read_dir("/dev/input/by-path/") {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     let path_str = path.to_string_lossy();
                     if path_str.contains("-event-kbd") || path_str.contains("-event-mouse") || path_str.ends_with("-event") {
-                        info!("Input: Registering safe device {:?}", path_str);
+                        info!("Input: Calling path_add_device for {:?}", path_str);
                         libinput_context.path_add_device(&path_str);
                         info!("Input: path_add_device returned for {:?}", path_str);
-                    } else {
-                        info!("Input: Skipping suspicious device {:?}", path_str);
                     }
                 }
             }
-            info!("Input: Device scan loop finished.");
             
             let libinput_backend = LibinputInputBackend::new(libinput_context);
-            info!("Input: Libinput backend created from path.");
             handle.insert_source(libinput_backend, |event, _, state| {
-                match event {
-                    InputEvent::Keyboard { event } => {
-                        let keycode = event.key_code();
-                        let key_state = event.state();
-                        let serial = SERIAL_COUNTER.next_serial();
-                        let time = event.time() as u32;
-                        if let Some(keyboard) = state.seat.get_keyboard() {
-                            keyboard.input::<(), _>(state, keycode, key_state, serial, time, |_, _, _| FilterResult::Forward);
-                        }
-                    }
-                    InputEvent::PointerMotion { event } => {
-                        state.pointer_location += event.delta().to_physical(1.0);
-                        state.pointer_location.x = state.pointer_location.x.max(0.0).min(1280.0);
-                        state.pointer_location.y = state.pointer_location.y.max(0.0).min(800.0);
-                        if let Some(pointer) = state.seat.get_pointer() {
-                            use smithay::input::pointer::MotionEvent;
-                            pointer.motion(state, None, &MotionEvent {
-                                location: state.pointer_location.to_logical(1.0),
-                                serial: SERIAL_COUNTER.next_serial(),
-                                time: event.time() as u32,
-                            });
-                        }
-                    }
-                    InputEvent::PointerButton { event } => {
-                        if let Some(pointer) = state.seat.get_pointer() {
-                            use smithay::input::pointer::ButtonEvent;
-                            pointer.button(state, &ButtonEvent {
-                                button: event.button_code(),
-                                state: event.state(),
-                                serial: SERIAL_COUNTER.next_serial(),
-                                time: event.time() as u32,
-                            });
-                        }
-                    }
-                    _ => {}
-                }
+               // Event handling code...
             }).ok();
+            */
             
             input_initialized = true;
-            info!("Input initialization attempt finished.");
+            info!("Input protocols initialized. Libinput skipped.");
         }
 
         event_loop.dispatch(Duration::from_millis(16), &mut state)?;
