@@ -374,22 +374,6 @@ fn main() -> anyhow::Result<()> {
         }
     }).map_err(|_e| anyhow::anyhow!("Failed to insert udev source"))?;
 
-    // 6. Setup Display Dispatching - CRITICAL: Clients won't work without this
-    handle.insert_source(
-        smithay::reexports::calloop::generic::Generic::new(display, Interest::READ, Mode::Level),
-        |_, display, state| {
-            unsafe {
-                let display = display.get_mut();
-                let _ = display.dispatch_clients(state);
-                let _ = display.flush_clients();
-            }
-            Ok(PostAction::Continue)
-        },
-    ).map_err(|_e| anyhow::anyhow!("Failed to insert display source"))?;
-
-    
-
-
     // 6. Run Loop
     info!("Flora Loop started. Initializing graphics first...");
     let mut input_initialized = false;
@@ -682,6 +666,10 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
+        // CRITICAL: Dispatch Wayland clients BEFORE event loop to process client requests
+        let _ = display.dispatch_clients(&mut state);
+        let _ = display.flush_clients();
+        
         event_loop.dispatch(Duration::from_millis(16), &mut state)?;
     }
 
