@@ -658,16 +658,16 @@ fn main() -> anyhow::Result<()> {
             input_initialized = true;
             info!("Input initialization fully finished.");
 
-            // Auto-spawn foot for testing
-            info!("Flora: Spawning foot terminal on socket: {:?}", state.socket_name);
-            use std::process::Command;
-            match Command::new("foot")
-                .env("WAYLAND_DISPLAY", &state.socket_name)
-                .env("XDG_RUNTIME_DIR", "/run/user/1000")
-                .spawn() {
-                Ok(_) => info!("Flora: foot spawned successfully."),
-                Err(e) => warn!("Flora: Failed to spawn foot: {:?}", e),
-            }
+            // DISABLED: Auto-spawn foot for testing - use manual foot for debugging
+            info!("Flora: Ready for clients! Connect with: WAYLAND_DISPLAY={:?} foot", state.socket_name);
+            // use std::process::Command;
+            // match Command::new("foot")
+            //     .env("WAYLAND_DISPLAY", &state.socket_name)
+            //     .env("XDG_RUNTIME_DIR", "/run/user/1000")
+            //     .spawn() {
+            //     Ok(_) => info!("Flora: foot spawned successfully."),
+            //     Err(e) => warn!("Flora: Failed to spawn foot: {:?}", e),
+            // }
         }
 
         // First: Accept new connections and process input events
