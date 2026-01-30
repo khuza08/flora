@@ -605,13 +605,13 @@ fn main() -> anyhow::Result<()> {
         }
 
         if !input_initialized && state.renderer.is_some() {
-            // Setup libinput in a background thread to avoid blocking the main rendering loop
-            let (input_sender, input_receiver) = smithay::reexports::calloop::channel::channel::<LibinputInputBackend>();
-            let handle_clone = handle.clone();
+            // 6. Initialize Input Protocols
+            // Setup libinput probing in a background thread to avoid blocking the main rendering loop
+            let (input_sender, input_receiver) = smithay::reexports::calloop::channel::channel::<()>();
 
-            info!("Input: Spawning background initialization thread...");
+            info!("Input: Spawning background probing thread...");
             std::thread::spawn(move || {
-                info!("Input Thread: Starting selective probe (this takes ~70s in VM)...");
+                info!("Input Thread: Starting selective device probe (this takes ~70s in VM)...");
                 let mut libinput_context = smithay::reexports::input::Libinput::new_from_path(FloraLibinputInterface);
                 let mut added_nodes: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
 
@@ -620,11 +620,9 @@ fn main() -> anyhow::Result<()> {
                         let path = entry.path();
                         let path_str = path.to_string_lossy();
                         
-                        if path_str.contains("i8042") || path_str.contains("acpi") {
-                            // Only skip very specific problematic ones if necessary, but keep PS/2 keyboard (event3)
-                            if !path_str.contains("-event-kbd") {
-                                continue;
-                            }
+                        // Keep PS/2 keyboard (event3) and essential devices
+                        if path_str.contains("acpi") {
+                            continue;
                         }
 
                         if path_str.contains("-event-kbd") || path_str.contains("-event-mouse") {
@@ -642,18 +640,29 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
 
-                let libinput_backend = LibinputInputBackend::new(libinput_context);
-                info!("Input Thread: Backend created. Sending to main thread...");
-                let _ = input_sender.send(libinput_backend);
+                info!("Input Thread: Probing complete. Signaling main thread...");
+                let _ = input_sender.send(());
             });
 
             // Register the receiver to the event loop
+            let loop_handle = handle.clone();
             handle.insert_source(input_receiver, move |event, _, state| {
-                if let smithay::reexports::calloop::channel::Event::Msg(backend) = event {
-                    info!("Input: Background initialization complete. Attaching backend to loop.");
+                if let smithay::reexports::calloop::channel::Event::Msg(()) = event {
+                    info!("Input: Background probing complete. Initializing backend in main thread.");
                     
-                    // Now that we have the backend, insert it into the main event loop
-                    handle_clone.insert_source(backend, |event, _, state| {
+                    let mut libinput_context = smithay::reexports::input::Libinput::new_from_path(FloraLibinputInterface);
+                    if let Ok(entries) = std::fs::read_dir("/dev/input/by-path/") {
+                        for entry in entries.flatten() {
+                            let path = entry.path();
+                            let path_str = path.to_string_lossy();
+                            if path_str.contains("-event-kbd") || path_str.contains("-event-mouse") {
+                                libinput_context.path_add_device(&path_str);
+                            }
+                        }
+                    }
+
+                    let libinput_backend = LibinputInputBackend::new(libinput_context);
+                    loop_handle.insert_source(libinput_backend, |event, _, state| {
                         match event {
                             InputEvent::Keyboard { event } => {
                                 let keycode = event.key_code();
@@ -676,8 +685,6 @@ fn main() -> anyhow::Result<()> {
                                 if let Some(pointer) = state.seat.get_pointer() {
                                     use smithay::input::pointer::MotionEvent;
                                     
-                                    // Find surface under pointer - for now, always use the first toplevel if it exists
-                                    // and the pointer is roughly in the middle (where we render it)
                                     let under = state.toplevels.first().map(|surface| {
                                         (surface.wl_surface().clone(), (0.0, 0.0).into())
                                     });
@@ -697,7 +704,6 @@ fn main() -> anyhow::Result<()> {
                                 if let Some(pointer) = state.seat.get_pointer() {
                                     use smithay::input::pointer::ButtonEvent;
                                     
-                                    // Ensure focus on click
                                     if let Some(surface) = state.toplevels.first() {
                                         let serial = SERIAL_COUNTER.next_serial();
                                         if let Some(keyboard) = state.seat.get_keyboard() {
@@ -720,7 +726,7 @@ fn main() -> anyhow::Result<()> {
             }).ok();
             
             input_initialized = true;
-            info!("Input: Background initialization scheduled. Flora is READY for rendering!");
+            info!("Input: Background probing scheduled. Flora is READY for rendering!");
 
             // DISABLED: Auto-spawn foot for testing - use manual foot for debugging
             info!("Flora: Ready for clients! Connect with: WAYLAND_DISPLAY={:?} foot", state.socket_name);
