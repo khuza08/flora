@@ -293,7 +293,7 @@ impl smithay_input::LibinputInterface for FloraLibinputInterface {
         info!("Libinput: Opening {:?}", path);
         let result = OpenOptions::new()
             .read(true)
-            .write(true)
+            .write(false) // Try read-only to avoid potential VM issues
             .open(path);
         
         match result {
@@ -584,10 +584,12 @@ fn main() -> anyhow::Result<()> {
             for i in 0..32 {
                 let path_str = format!("/dev/input/event{}", i);
                 if std::path::Path::new(&path_str).exists() {
-                    info!("Input: Registering device {:?}", path_str);
+                    info!("Input: Calling path_add_device for {:?}", path_str);
                     libinput_context.path_add_device(&path_str);
+                    info!("Input: path_add_device returned for {:?}", path_str);
                 }
             }
+            info!("Input: Device scan loop finished.");
             
             let libinput_backend = LibinputInputBackend::new(libinput_context);
             info!("Input: Libinput backend created from path.");
