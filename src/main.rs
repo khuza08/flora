@@ -378,26 +378,7 @@ fn main() -> anyhow::Result<()> {
         }
     }).map_err(|_e| anyhow::anyhow!("Failed to insert udev source"))?;
 
-    // 6. Setup Display Event Source - Monitor and dispatch when clients send data
-    use smithay::reexports::calloop::generic::Generic;
-    
-    let display_for_source = display.clone();
-    
-    // Create owned FD from poll_fd to avoid borrow lifetime issues
-    use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd};
-    let raw_fd = display.borrow_mut().backend().poll_fd().as_raw_fd();
-    let owned_fd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
-    let generic_display = Generic::new(owned_fd, Interest::READ, Mode::Level);
-    
-    handle.insert_source(generic_display, move |_event, _metadata, state| {
-        // Dispatch clients when data arrives
-        let mut disp = display_for_source.borrow_mut();
-        let _ = disp.dispatch_clients(state);
-        let _ = disp.flush_clients();
-        Ok(PostAction::Continue)
-    }).map_err(|_e| anyhow::anyhow!("Failed to insert display event source"))?;
-
-    // 7. Run Loop
+    // 6. Run Loop - dispatch clients manually each iteration
     info!("Flora Loop started. Initializing graphics first...");
     let mut input_initialized = false;
 
@@ -689,6 +670,12 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
+        // CRITICAL: Dispatch Wayland clients each frame to process requests
+        if let Ok(mut disp) = display.try_borrow_mut() {
+            let _ = disp.dispatch_clients(&mut state);
+            let _ = disp.flush_clients();
+        }
+        
         event_loop.dispatch(Duration::from_millis(16), &mut state)?;
     }
 
