@@ -669,11 +669,10 @@ fn main() -> anyhow::Result<()> {
                         
                         if let Some(pointer) = state.seat.get_pointer() {
                             use smithay::input::pointer::MotionEvent;
-                            
                             // Find surface under pointer - for now, always use the first toplevel if it exists
                             // and the pointer is roughly in the middle (where we render it)
                             let under = state.toplevels.first().map(|surface| {
-                                (surface.wl_surface().clone(), (0, 0).into())
+                                (surface.wl_surface().clone(), (0.0, 0.0).into())
                             });
 
                             pointer.motion(state, under, &MotionEvent {
