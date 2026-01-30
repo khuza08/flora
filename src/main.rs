@@ -47,7 +47,7 @@ use smithay::{
     input::keyboard::FilterResult,
     utils::SERIAL_COUNTER,
 };
-use tracing::{info, warn};
+use tracing::{info, warn, error};
 use std::{time::Duration, sync::Arc, path::PathBuf, fs::OpenOptions};
 
 pub struct FloraState {
