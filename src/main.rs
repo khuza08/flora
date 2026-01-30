@@ -670,13 +670,14 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
-        // CRITICAL: Dispatch Wayland clients each frame to process requests
+        // First: Accept new connections and process input events
+        event_loop.dispatch(Duration::from_millis(16), &mut state)?;
+        
+        // Second: Dispatch Wayland protocol messages from connected clients
         if let Ok(mut disp) = display.try_borrow_mut() {
             let _ = disp.dispatch_clients(&mut state);
             let _ = disp.flush_clients();
         }
-        
-        event_loop.dispatch(Duration::from_millis(16), &mut state)?;
     }
 
     Ok(())
