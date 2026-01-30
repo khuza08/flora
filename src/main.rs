@@ -73,6 +73,7 @@ pub struct FloraState {
     pub toplevels: Vec<ToplevelSurface>,
     pub pointer_location: Point<f64, Physical>,
     pub input_context: Option<smithay::reexports::input::Libinput>,
+    pub socket_name: std::ffi::OsString,
 }
 
 use smithay::delegate_seat;
@@ -212,6 +213,7 @@ impl FloraState {
             toplevels: Vec::new(),
             pointer_location: Point::from((0.0, 0.0)),
             input_context: None,
+            socket_name: std::ffi::OsString::new(),
         }
     }
 }
@@ -333,6 +335,7 @@ fn main() -> anyhow::Result<()> {
     let source = ListeningSocketSource::new_auto()?;
     let socket_name = source.socket_name().to_os_string();
     info!("Flora active! Socket Name: {:?}", socket_name);
+    state.socket_name = socket_name.clone();
 
     handle.insert_source(source, |client_stream, _, state| {
         let client_data = FloraClientData {
@@ -654,9 +657,12 @@ fn main() -> anyhow::Result<()> {
             info!("Input initialization fully finished.");
 
             // Auto-spawn foot for testing
-            info!("Flora: Spawning foot terminal...");
+            info!("Flora: Spawning foot terminal on socket: {:?}", state.socket_name);
             use std::process::Command;
-            match Command::new("foot").spawn() {
+            match Command::new("foot")
+                .env("WAYLAND_DISPLAY", &state.socket_name)
+                .env("XDG_RUNTIME_DIR", "/run/user/1000") // Ensure runtime dir is set
+                .spawn() {
                 Ok(_) => info!("Flora: foot spawned successfully."),
                 Err(e) => warn!("Flora: Failed to spawn foot: {:?}", e),
             }
