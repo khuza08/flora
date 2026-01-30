@@ -18,7 +18,6 @@ use smithay::{
         calloop::{EventLoop},
         wayland_server::{Display, DisplayHandle, Client, backend::ClientData},
         drm::control::{connector, Device as _},
-        input as smithay_input,
     },
     utils::{DeviceFd, Transform, Size, Scale, Physical, Point},
     wayland::{
@@ -46,7 +45,7 @@ use smithay::reexports::input::{
         EventTrait, 
         keyboard::{KeyboardEventTrait, KeyState}, 
         pointer::{PointerEventTrait, ButtonState, PointerEvent},
-        device::{DeviceEvent, DeviceAddedEvent},
+        device::{DeviceEvent},
     },
 };
 use smithay::{
@@ -651,11 +650,7 @@ fn main() -> anyhow::Result<()> {
                     for event in &mut libinput {
                         match event {
                             LibinputEvent::Device(DeviceEvent::Added(d)) => {
-                                if let Some(name) = d.device().name() {
-                                    info!("Input Thread: Event: DeviceAdded({:?})", name);
-                                } else {
-                                    info!("Input Thread: Event: DeviceAdded(Unknown)");
-                                }
+                                info!("Input Thread: Event: DeviceAdded({:?})", d.device().name());
                             }
                             LibinputEvent::Keyboard(kb) => {
                                 info!("Input Thread: Raw Keyboard: key={} state={:?}", kb.key(), kb.key_state());
