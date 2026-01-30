@@ -579,14 +579,19 @@ fn main() -> anyhow::Result<()> {
             info!("Input: Initializing Libinput context (Path-based)...");
             let mut libinput_context = smithay::reexports::input::Libinput::new_from_path(FloraLibinputInterface);
             
-            // Manually add devices to avoid udev_assign_seat hang
-            info!("Input: Manually adding devices from /dev/input/ (skipping event0)...");
-            for i in 1..32 {
-                let path_str = format!("/dev/input/event{}", i);
-                if std::path::Path::new(&path_str).exists() {
-                    info!("Input: Calling path_add_device for {:?}", path_str);
-                    libinput_context.path_add_device(&path_str);
-                    info!("Input: path_add_device returned for {:?}", path_str);
+            // Manually add devices from by-path to avoid hangs on ACPI virtual devices (event0, event1, etc.)
+            info!("Input: Scanning /dev/input/by-path/ for kbd and mouse devices...");
+            if let Ok(entries) = std::fs::read_dir("/dev/input/by-path/") {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    let path_str = path.to_string_lossy();
+                    if path_str.contains("-event-kbd") || path_str.contains("-event-mouse") || path_str.ends_with("-event") {
+                        info!("Input: Registering safe device {:?}", path_str);
+                        libinput_context.path_add_device(&path_str);
+                        info!("Input: path_add_device returned for {:?}", path_str);
+                    } else {
+                        info!("Input: Skipping suspicious device {:?}", path_str);
+                    }
                 }
             }
             info!("Input: Device scan loop finished.");
