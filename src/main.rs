@@ -353,20 +353,20 @@ fn main() -> anyhow::Result<()> {
     let udev = UdevBackend::new("seat0")?;
     
     // Scan for existing devices since Added events only trigger for new hotplugged devices
-    for (_device_id, path): (smithay::backend::udev::DeviceId, std::path::PathBuf) in udev.device_list() {
-        info!("Existing device detected: {:?}", path);
-        if path.to_string_lossy().contains("card") || path.to_string_lossy().contains("render") {
-            state.drm_devices.push(path);
+    for (_device_id, dev_path) in udev.device_list() {
+        info!("Existing device detected: {:?}", dev_path);
+        if dev_path.to_string_lossy().contains("card") || dev_path.to_string_lossy().contains("render") {
+            state.drm_devices.push(dev_path.to_path_buf());
         }
     }
 
     handle.insert_source(udev, |event, _, state| {
         match event {
-            UdevEvent::Added { device_id: _, path } => {
-                info!("New device detected: {:?}", path);
+            UdevEvent::Added { device_id: _, path: dev_path } => {
+                info!("New device detected: {:?}", dev_path);
                 // Save if this is a DRM device (graphics card)
-                if path.to_string_lossy().contains("card") || path.to_string_lossy().contains("render") {
-                    state.drm_devices.push(path);
+                if dev_path.to_string_lossy().contains("card") || dev_path.to_string_lossy().contains("render") {
+                    state.drm_devices.push(dev_path);
                 }
             },
             UdevEvent::Changed { device_id: _ } => info!("Device changed"),
