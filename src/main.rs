@@ -15,7 +15,7 @@ use smithay::{
     },
     output::OutputModeSource,
     reexports::{
-        calloop::{EventLoop, Interest, Mode, PostAction},
+        calloop::{EventLoop},
         wayland_server::{Display, DisplayHandle, Client, backend::ClientData},
         drm::control::{connector, Device as _},
         input as smithay_input,
@@ -36,14 +36,10 @@ use smithay::{
             primary_selection::{PrimarySelectionState, PrimarySelectionHandler},
         },
         output::OutputHandler,
+        text_input::{TextInputManagerState},
     },
     output::{Output, PhysicalProperties, Subpixel, Mode as OutputMode},
     input::{SeatState, SeatHandler, Seat},
-    backend::input::{
-        InputEvent, Event,
-        KeyboardKeyEvent, PointerMotionEvent, PointerButtonEvent,
-    },
-    backend::libinput::LibinputInputBackend,
     input::keyboard::FilterResult,
     utils::SERIAL_COUNTER,
 };
@@ -58,6 +54,7 @@ pub struct FloraState {
     pub data_device_state: DataDeviceState,
     pub primary_selection_state: PrimarySelectionState,
     pub xdg_decoration_state: XdgDecorationState,
+    pub text_input_manager_state: TextInputManagerState,
     pub seat_state: SeatState<Self>,
     pub seat: Seat<Self>,
     pub output: Option<Output>,
@@ -155,6 +152,9 @@ impl XdgDecorationHandler for FloraState {
 use smithay::delegate_xdg_decoration;
 delegate_xdg_decoration!(FloraState);
 
+use smithay::delegate_text_input_manager;
+delegate_text_input_manager!(FloraState);
+
 pub struct FloraClientData {
     pub compositor_state: CompositorClientState,
 }
@@ -169,6 +169,7 @@ impl FloraState {
         let data_device_state = DataDeviceState::new::<Self>(dh);
         let primary_selection_state = PrimarySelectionState::new::<Self>(dh);
         let xdg_decoration_state = XdgDecorationState::new::<Self>(dh);
+        let text_input_manager_state = TextInputManagerState::new::<Self>(dh);
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(dh, "seat0");
         
@@ -204,6 +205,7 @@ impl FloraState {
             data_device_state,
             primary_selection_state,
             xdg_decoration_state,
+            text_input_manager_state,
             seat_state,
             seat,
             output: Some(output),
@@ -320,9 +322,35 @@ impl smithay_input::LibinputInterface for FloraLibinputInterface {
     }
 }
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
+#[derive(Debug, Clone)]
+enum FloraInputEvent {
+    Keyboard {
+        keycode: u32,
+        pressed: bool,
+        time: u32,
+    },
+    PointerMotion {
+        delta: Point<f64, Physical>,
+        time: u32,
+    },
+    PointerButton {
+        button: u32,
+        pressed: bool,
+        time: u32,
+    },
+}
+
+static LOOP_COUNT: AtomicU64 = AtomicU64::new(0);
+
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().init();
     info!("Flora: Starting macOS-like Compositor...");
+    
+    // ... rest of main ...
+
+    // ... (rest of the setup until Loop)
 
     // 1. Setup Event Loop
     let mut event_loop: EventLoop<FloraState> = EventLoop::try_new()?;
@@ -606,151 +634,158 @@ fn main() -> anyhow::Result<()> {
 
         if !input_initialized && state.renderer.is_some() {
             // 6. Initialize Input Protocols
-            // Setup libinput probing in a background thread to avoid blocking the main rendering loop
-            let (input_sender, input_receiver) = smithay::reexports::calloop::channel::channel::<()>();
+            let (input_sender, input_receiver) = smithay::reexports::calloop::channel::channel::<FloraInputEvent>();
 
-            info!("Input: Spawning background probing thread...");
+            info!("Input: Spawning dedicated background input thread...");
             std::thread::spawn(move || {
-                info!("Input Thread: Starting selective device probe (this takes ~70s in VM)...");
+                info!("Input Thread: Initializing Libinput...");
                 let mut libinput_context = smithay::reexports::input::Libinput::new_from_path(FloraLibinputInterface);
                 let mut added_nodes: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
 
+                // Aggressive probing
                 if let Ok(entries) = std::fs::read_dir("/dev/input/by-path/") {
                     for entry in entries.flatten() {
                         let path = entry.path();
                         let path_str = path.to_string_lossy();
                         
-                        // Keep PS/2 keyboard (event3) and essential devices
-                        if path_str.contains("acpi") {
-                            continue;
+                        // SKIP list for VM stability
+                        if path_str.contains("acpi") { continue; }
+                        if path_str.contains("i8042-serio-1-event-mouse") { 
+                            warn!("Input Thread: SKIPPING problematic device: {}", path_str);
+                            continue; 
                         }
 
                         if path_str.contains("-event-kbd") || path_str.contains("-event-mouse") {
                             if let Ok(real_path) = std::fs::canonicalize(&path) {
-                                if added_nodes.contains(&real_path) {
-                                    continue;
-                                }
-                                
-                                info!("Input Thread: Calling path_add_device for {:?} (Target: {:?})", path_str, real_path);
+                                if added_nodes.contains(&real_path) { continue; }
+                                info!("Input Thread: Adding device {:?}...", path_str);
                                 libinput_context.path_add_device(&path_str);
-                                info!("Input Thread: path_add_device for {:?} RETURNED.", path_str);
                                 added_nodes.insert(real_path);
                             }
                         }
                     }
                 }
 
-                info!("Input Thread: Probing complete. Signaling main thread...");
-                let _ = input_sender.send(());
-            });
-
-            // Register the receiver to the event loop
-            let loop_handle = handle.clone();
-            handle.insert_source(input_receiver, move |event, _, state| {
-                if let smithay::reexports::calloop::channel::Event::Msg(()) = event {
-                    info!("Input: Background probing complete. Initializing backend in main thread.");
-                    
-                    let mut libinput_context = smithay::reexports::input::Libinput::new_from_path(FloraLibinputInterface);
-                    if let Ok(entries) = std::fs::read_dir("/dev/input/by-path/") {
-                        for entry in entries.flatten() {
-                            let path = entry.path();
-                            let path_str = path.to_string_lossy();
-                            if path_str.contains("-event-kbd") || path_str.contains("-event-mouse") {
-                                libinput_context.path_add_device(&path_str);
-                            }
-                        }
+                info!("Input Thread: Probing complete. Entering event loop.");
+                loop {
+                    if let Err(e) = libinput_context.dispatch() {
+                        error!("Input Thread: Libinput dispatch error: {:?}", e);
+                        std::thread::sleep(Duration::from_millis(10));
+                        continue;
                     }
-
-                    let libinput_backend = LibinputInputBackend::new(libinput_context);
-                    loop_handle.insert_source(libinput_backend, |event, _, state| {
+                    
+                    for event in &mut libinput_context {
+                        use smithay::reexports::input::Event as LibinputEvent;
+                        use smithay::reexports::input::event::keyboard::KeyboardEventTrait as _;
+                        use smithay::reexports::input::event::pointer::PointerEventTrait as _;
+                        
                         match event {
-                            InputEvent::Keyboard { event } => {
-                                let keycode = event.key_code();
-                                let key_state = event.state();
-                                info!("Input EVENT: Keyboard key={:?} state={:?}", keycode, key_state);
-                                let serial = SERIAL_COUNTER.next_serial();
-                                let time = event.time() as u32;
-                                if let Some(keyboard) = state.seat.get_keyboard() {
-                                    keyboard.input::<(), _>(state, keycode, key_state, serial, time, |_, _, _| FilterResult::Forward);
-                                } else {
-                                    warn!("Input: Received keyboard event but seat has no keyboard!");
-                                }
+                            LibinputEvent::Keyboard(kb_event) => {
+                                let key = kb_event.key();
+                                let state = kb_event.key_state();
+                                let time = kb_event.time();
+                                let _ = input_sender.send(FloraInputEvent::Keyboard { 
+                                    keycode: key, 
+                                    pressed: state == smithay::reexports::input::event::keyboard::KeyState::Pressed, 
+                                    time: time as u32
+                                });
                             }
-                            InputEvent::PointerMotion { event } => {
-                                let delta = event.delta().to_physical(1.0);
-                                state.pointer_location += delta;
-                                state.pointer_location.x = state.pointer_location.x.max(0.0).min(1280.0);
-                                state.pointer_location.y = state.pointer_location.y.max(0.0).min(800.0);
-                                
-                                if let Some(pointer) = state.seat.get_pointer() {
-                                    use smithay::input::pointer::MotionEvent;
-                                    
-                                    let under = state.toplevels.first().map(|surface| {
-                                        (surface.wl_surface().clone(), (0.0, 0.0).into())
-                                    });
-
-                                    pointer.motion(state, under, &MotionEvent {
-                                        location: state.pointer_location.to_logical(1.0),
-                                        serial: SERIAL_COUNTER.next_serial(),
-                                        time: event.time() as u32,
-                                    });
-                                }
-                            }
-                            InputEvent::PointerButton { event } => {
-                                let button = event.button_code();
-                                let state_btn = event.state();
-                                info!("Input EVENT: PointerButton button={} state={:?}", button, state_btn);
-                                
-                                if let Some(pointer) = state.seat.get_pointer() {
-                                    use smithay::input::pointer::ButtonEvent;
-                                    
-                                    if let Some(surface) = state.toplevels.first() {
-                                        let serial = SERIAL_COUNTER.next_serial();
-                                        if let Some(keyboard) = state.seat.get_keyboard() {
-                                            keyboard.set_focus(state, Some(surface.wl_surface().clone()), serial);
-                                        }
+                            LibinputEvent::Pointer(ptr_event) => {
+                                use smithay::reexports::input::event::pointer::PointerEvent;
+                                match ptr_event {
+                                    PointerEvent::Motion(m) => {
+                                        let dx = m.dx();
+                                        let dy = m.dy();
+                                        let time = m.time();
+                                        let _ = input_sender.send(FloraInputEvent::PointerMotion { 
+                                            delta: Point::from((dx, dy)), 
+                                            time: time as u32
+                                        });
                                     }
-
-                                    pointer.button(state, &ButtonEvent {
-                                        button: event.button_code(),
-                                        state: event.state(),
-                                        serial: SERIAL_COUNTER.next_serial(),
-                                        time: event.time() as u32,
-                                    });
+                                    PointerEvent::Button(b) => {
+                                        let button = b.button();
+                                        let state = b.button_state();
+                                        let time = b.time();
+                                        let _ = input_sender.send(FloraInputEvent::PointerButton { 
+                                            button, 
+                                            pressed: state == smithay::reexports::input::event::pointer::ButtonState::Pressed, 
+                                            time: time as u32
+                                        });
+                                    }
+                                    _ => {}
                                 }
                             }
                             _ => {}
                         }
-                    }).ok();
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            });
+
+            // Handle events in the main thread
+            handle.insert_source(input_receiver, move |event, _, state| {
+                if let smithay::reexports::calloop::channel::Event::Msg(flora_event) = event {
+                    match flora_event {
+                        FloraInputEvent::Keyboard { keycode, pressed, time } => {
+                            let key_state = if pressed { smithay::backend::input::KeyState::Pressed } else { smithay::backend::input::KeyState::Released };
+                            info!("Main Thread Input: Key={:?} State={:?}", keycode, key_state);
+                            let serial = SERIAL_COUNTER.next_serial();
+                            if let Some(keyboard) = state.seat.get_keyboard() {
+                                use smithay::input::keyboard::Keycode;
+                                keyboard.input::<(), _>(state, Keycode::from(keycode), key_state, serial, time, |_, _, _| FilterResult::Forward);
+                            }
+                        }
+                        FloraInputEvent::PointerMotion { delta, time } => {
+                            state.pointer_location += delta;
+                            state.pointer_location.x = state.pointer_location.x.max(0.0).min(1280.0);
+                            state.pointer_location.y = state.pointer_location.y.max(0.0).min(800.0);
+                            
+                            if let Some(pointer) = state.seat.get_pointer() {
+                                use smithay::input::pointer::MotionEvent;
+                                let under = state.toplevels.first().map(|surface| {
+                                    (surface.wl_surface().clone(), (0.0, 0.0).into())
+                                });
+                                pointer.motion(state, under, &MotionEvent {
+                                    location: state.pointer_location.to_logical(1.0),
+                                    serial: SERIAL_COUNTER.next_serial(),
+                                    time,
+                                });
+                            }
+                        }
+                        FloraInputEvent::PointerButton { button, pressed, time } => {
+                            let btn_state = if pressed { smithay::backend::input::ButtonState::Pressed } else { smithay::backend::input::ButtonState::Released };
+                            info!("Main Thread Input: Button={} State={:?}", button, btn_state);
+                            if let Some(pointer) = state.seat.get_pointer() {
+                                use smithay::input::pointer::ButtonEvent;
+                                if let Some(surface) = state.toplevels.first() {
+                                    let serial = SERIAL_COUNTER.next_serial();
+                                    if let Some(keyboard) = state.seat.get_keyboard() {
+                                        keyboard.set_focus(state, Some(surface.wl_surface().clone()), serial);
+                                    }
+                                }
+                                pointer.button(state, &ButtonEvent {
+                                    button,
+                                    state: btn_state,
+                                    serial: SERIAL_COUNTER.next_serial(),
+                                    time,
+                                });
+                            }
+                        }
+                    }
                 }
             }).ok();
             
             input_initialized = true;
-            info!("Input: Background probing scheduled. Flora is READY for rendering!");
-
-            // DISABLED: Auto-spawn foot for testing - use manual foot for debugging
-            info!("Flora: Ready for clients! Connect with: WAYLAND_DISPLAY={:?} foot", state.socket_name);
-            // use std::process::Command;
-            // match Command::new("foot")
-            //     .env("WAYLAND_DISPLAY", &state.socket_name)
-            //     .env("XDG_RUNTIME_DIR", "/run/user/1000")
-            //     .spawn() {
-            //     Ok(_) => info!("Flora: foot spawned successfully."),
-            //     Err(e) => warn!("Flora: Failed to spawn foot: {:?}", e),
-            // }
+            info!("Input: Background thread started. Flora is READY!");
+            info!("Flora: Connect with: WAYLAND_DISPLAY={:?} foot", state.socket_name);
         }
 
-        static mut LOOP_COUNT: u64 = 0;
-        unsafe {
-            LOOP_COUNT += 1;
-            // Log first 10 iterations and then every 20
-            if LOOP_COUNT <= 10 || LOOP_COUNT % 20 == 0 {
-                info!("Flora: Main loop iteration {}", LOOP_COUNT);
-            }
+        let count = LOOP_COUNT.fetch_add(1, Ordering::SeqCst);
+        if count <= 10 || count % 20 == 0 {
+            info!("Flora: Main loop iteration {}", count);
         }
 
         // First: Accept new connections and process input events
-        // Use ZERO timeout so dispatch returns immediately - we control timing with sleep
         info!("Flora: BEFORE event_loop.dispatch()");
         match event_loop.dispatch(Duration::ZERO, &mut state) {
             Ok(_) => {
@@ -762,22 +797,16 @@ fn main() -> anyhow::Result<()> {
             }
         }
         
-        // Sleep for frame pacing since we're using ZERO timeout dispatch
+        // Sleep for frame pacing
         std::thread::sleep(Duration::from_millis(16));
         
-        // Second: Dispatch Wayland protocol messages from connected clients
+        // Second: Dispatch Wayland protocol messages
         match display.try_borrow_mut() {
             Ok(mut disp) => {
-                if let Err(e) = disp.dispatch_clients(&mut state) {
-                    error!("Flora: dispatch_clients error: {:?}", e);
-                }
-                if let Err(e) = disp.flush_clients() {
-                    error!("Flora: flush_clients error: {:?}", e);
-                }
+                let _ = disp.dispatch_clients(&mut state);
+                let _ = disp.flush_clients();
             },
-            Err(e) => {
-                warn!("Flora: Could not borrow display: {:?}", e);
-            }
+            Err(_) => {}
         }
     }
 
