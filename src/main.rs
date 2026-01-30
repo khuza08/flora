@@ -338,10 +338,13 @@ fn main() -> anyhow::Result<()> {
     // 4. Setup Wayland Socket
     let source = ListeningSocketSource::new_auto()?;
     let socket_name = source.socket_name().to_os_string();
-    info!("Flora active! Socket Name: {:?}", socket_name);
+    let xdg_runtime = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/1000".to_string());
+    info!("Flora active! Socket Name: {:?}, XDG_RUNTIME_DIR: {}", socket_name, xdg_runtime);
+    info!("Full socket path: {}/{}", xdg_runtime, socket_name.to_string_lossy());
     state.socket_name = socket_name.clone();
 
     handle.insert_source(source, |client_stream, _, state| {
+        info!("Socket callback TRIGGERED! Client attempting to connect...");
         let client_data = FloraClientData {
             compositor_state: CompositorClientState::default(),
         };
