@@ -605,117 +605,122 @@ fn main() -> anyhow::Result<()> {
         }
 
         if !input_initialized && state.renderer.is_some() {
-            info!("Graphics ready, initializing input backend (NOTE: This may take 30-60s in VM, please wait)...");
-            // Capabilities already added in FloraState::new
+            // Setup libinput in a background thread to avoid blocking the main rendering loop
+            let (input_sender, input_receiver) = smithay::reexports::calloop::channel::channel::<LibinputInputBackend>();
+            let handle_clone = handle.clone();
 
-            info!("Input: Initializing Libinput context (Path-based)...");
-            let mut libinput_context = smithay::reexports::input::Libinput::new_from_path(FloraLibinputInterface);
-            
-            // Avoid adding the same event node multiple times via symlinks
-            let mut added_nodes: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
+            info!("Input: Spawning background initialization thread...");
+            std::thread::spawn(move || {
+                info!("Input Thread: Starting selective probe (this takes ~70s in VM)...");
+                let mut libinput_context = smithay::reexports::input::Libinput::new_from_path(FloraLibinputInterface);
+                let mut added_nodes: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
 
-            info!("Input: Scanning /dev/input/by-path/...");
-            if let Ok(entries) = std::fs::read_dir("/dev/input/by-path/") {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    let path_str = path.to_string_lossy();
-                    
-                    // Skip legacy/ACPI that cause hangs
-                    if path_str.contains("i8042") || path_str.contains("acpi") {
-                        continue;
-                    }
-
-                    if path_str.contains("-event-kbd") || path_str.contains("-event-mouse") {
-                        // Resolve symlink to see the real eventX node
-                        if let Ok(real_path) = std::fs::canonicalize(&path) {
-                            if added_nodes.contains(&real_path) {
+                if let Ok(entries) = std::fs::read_dir("/dev/input/by-path/") {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        let path_str = path.to_string_lossy();
+                        
+                        if path_str.contains("i8042") || path_str.contains("acpi") {
+                            // Only skip very specific problematic ones if necessary, but keep PS/2 keyboard (event3)
+                            if !path_str.contains("-event-kbd") {
                                 continue;
                             }
-                            
-                            // Temporary skip for event3 which takes 10 seconds in this VM
-                            let real_path_str = real_path.to_string_lossy();
-                            if real_path_str.contains("event3") {
-                                info!("Input: Skipping SLOW device {:?} (Target: {:?})", path_str, real_path);
-                                continue;
-                            }
+                        }
 
-                            info!("Input: Calling path_add_device for {:?} (Target: {:?})", path_str, real_path);
-                            libinput_context.path_add_device(&path_str);
-                            info!("Input: path_add_device for {:?} RETURNED.", path_str);
-                            added_nodes.insert(real_path);
+                        if path_str.contains("-event-kbd") || path_str.contains("-event-mouse") {
+                            if let Ok(real_path) = std::fs::canonicalize(&path) {
+                                if added_nodes.contains(&real_path) {
+                                    continue;
+                                }
+                                
+                                info!("Input Thread: Calling path_add_device for {:?} (Target: {:?})", path_str, real_path);
+                                libinput_context.path_add_device(&path_str);
+                                info!("Input Thread: path_add_device for {:?} RETURNED.", path_str);
+                                added_nodes.insert(real_path);
+                            }
                         }
                     }
                 }
-            }
-            
-            let libinput_backend = LibinputInputBackend::new(libinput_context);
-            info!("Input: Libinput backend created. Inserting source...");
-            handle.insert_source(libinput_backend, |event, _, state| {
-                match event {
-                    InputEvent::Keyboard { event } => {
-                        let keycode = event.key_code();
-                        let key_state = event.state();
-                        info!("Input EVENT: Keyboard key={:?} state={:?}", keycode, key_state);
-                        let serial = SERIAL_COUNTER.next_serial();
-                        let time = event.time() as u32;
-                        if let Some(keyboard) = state.seat.get_keyboard() {
-                            keyboard.input::<(), _>(state, keycode, key_state, serial, time, |_, _, _| FilterResult::Forward);
-                        } else {
-                            warn!("Input: Received keyboard event but seat has no keyboard!");
-                        }
-                    }
-                    InputEvent::PointerMotion { event } => {
-                        let delta = event.delta().to_physical(1.0);
-                        state.pointer_location += delta;
-                        state.pointer_location.x = state.pointer_location.x.max(0.0).min(1280.0);
-                        state.pointer_location.y = state.pointer_location.y.max(0.0).min(800.0);
-                        
-                        if let Some(pointer) = state.seat.get_pointer() {
-                            use smithay::input::pointer::MotionEvent;
-                            
-                            // Find surface under pointer - for now, always use the first toplevel if it exists
-                            // and the pointer is roughly in the middle (where we render it)
-                            let under = state.toplevels.first().map(|surface| {
-                                (surface.wl_surface().clone(), (0.0, 0.0).into())
-                            });
 
-                            pointer.motion(state, under, &MotionEvent {
-                                location: state.pointer_location.to_logical(1.0),
-                                serial: SERIAL_COUNTER.next_serial(),
-                                time: event.time() as u32,
-                            });
-                        }
-                    }
-                    InputEvent::PointerButton { event } => {
-                        let button = event.button_code();
-                        let state_btn = event.state();
-                        info!("Input EVENT: PointerButton button={} state={:?}", button, state_btn);
-                        
-                        if let Some(pointer) = state.seat.get_pointer() {
-                            use smithay::input::pointer::ButtonEvent;
-                            
-                            // Ensure focus on click
-                            if let Some(surface) = state.toplevels.first() {
+                let libinput_backend = LibinputInputBackend::new(libinput_context);
+                info!("Input Thread: Backend created. Sending to main thread...");
+                let _ = input_sender.send(libinput_backend);
+            });
+
+            // Register the receiver to the event loop
+            handle.insert_source(input_receiver, move |event, _, state| {
+                if let smithay::reexports::calloop::channel::Event::Msg(backend) = event {
+                    info!("Input: Background initialization complete. Attaching backend to loop.");
+                    
+                    // Now that we have the backend, insert it into the main event loop
+                    handle_clone.insert_source(backend, |event, _, state| {
+                        match event {
+                            InputEvent::Keyboard { event } => {
+                                let keycode = event.key_code();
+                                let key_state = event.state();
+                                info!("Input EVENT: Keyboard key={:?} state={:?}", keycode, key_state);
                                 let serial = SERIAL_COUNTER.next_serial();
+                                let time = event.time() as u32;
                                 if let Some(keyboard) = state.seat.get_keyboard() {
-                                    keyboard.set_focus(state, Some(surface.wl_surface().clone()), serial);
+                                    keyboard.input::<(), _>(state, keycode, key_state, serial, time, |_, _, _| FilterResult::Forward);
+                                } else {
+                                    warn!("Input: Received keyboard event but seat has no keyboard!");
                                 }
                             }
+                            InputEvent::PointerMotion { event } => {
+                                let delta = event.delta().to_physical(1.0);
+                                state.pointer_location += delta;
+                                state.pointer_location.x = state.pointer_location.x.max(0.0).min(1280.0);
+                                state.pointer_location.y = state.pointer_location.y.max(0.0).min(800.0);
+                                
+                                if let Some(pointer) = state.seat.get_pointer() {
+                                    use smithay::input::pointer::MotionEvent;
+                                    
+                                    // Find surface under pointer - for now, always use the first toplevel if it exists
+                                    // and the pointer is roughly in the middle (where we render it)
+                                    let under = state.toplevels.first().map(|surface| {
+                                        (surface.wl_surface().clone(), (0.0, 0.0).into())
+                                    });
 
-                            pointer.button(state, &ButtonEvent {
-                                button: event.button_code(),
-                                state: event.state(),
-                                serial: SERIAL_COUNTER.next_serial(),
-                                time: event.time() as u32,
-                            });
+                                    pointer.motion(state, under, &MotionEvent {
+                                        location: state.pointer_location.to_logical(1.0),
+                                        serial: SERIAL_COUNTER.next_serial(),
+                                        time: event.time() as u32,
+                                    });
+                                }
+                            }
+                            InputEvent::PointerButton { event } => {
+                                let button = event.button_code();
+                                let state_btn = event.state();
+                                info!("Input EVENT: PointerButton button={} state={:?}", button, state_btn);
+                                
+                                if let Some(pointer) = state.seat.get_pointer() {
+                                    use smithay::input::pointer::ButtonEvent;
+                                    
+                                    // Ensure focus on click
+                                    if let Some(surface) = state.toplevels.first() {
+                                        let serial = SERIAL_COUNTER.next_serial();
+                                        if let Some(keyboard) = state.seat.get_keyboard() {
+                                            keyboard.set_focus(state, Some(surface.wl_surface().clone()), serial);
+                                        }
+                                    }
+
+                                    pointer.button(state, &ButtonEvent {
+                                        button: event.button_code(),
+                                        state: event.state(),
+                                        serial: SERIAL_COUNTER.next_serial(),
+                                        time: event.time() as u32,
+                                    });
+                                }
+                            }
+                            _ => {}
                         }
-                    }
-                    _ => {}
+                    }).ok();
                 }
             }).ok();
             
             input_initialized = true;
-            info!("Input initialization fully finished.");
+            info!("Input: Background initialization scheduled. Flora is READY for rendering!");
 
             // DISABLED: Auto-spawn foot for testing - use manual foot for debugging
             info!("Flora: Ready for clients! Connect with: WAYLAND_DISPLAY={:?} foot", state.socket_name);
