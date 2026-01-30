@@ -579,37 +579,31 @@ fn main() -> anyhow::Result<()> {
             info!("Input: Initializing Libinput context (Path-based)...");
             let mut libinput_context = smithay::reexports::input::Libinput::new_from_path(FloraLibinputInterface);
             
-            // Re-enabling device scanning with write access and prioritizing keyboards
-            info!("Input: Scanning /dev/input/by-path/ for KBD only first...");
-            if let Ok(entries) = std::fs::read_dir("/dev/input/by-path/") {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    let path_str = path.to_string_lossy();
-                    if path_str.contains("-event-kbd") {
-                        if path_str.contains("i8042") || path_str.contains("acpi") {
-                            info!("Input: Skipping known problematic legacy/ACPI device {:?}", path_str);
-                            continue;
-                        }
-                        info!("Input: Calling path_add_device for KBD {:?}", path_str);
-                        libinput_context.path_add_device(&path_str);
-                        info!("Input: path_add_device returned for KBD {:?}", path_str);
-                    }
-                }
-            }
+            // Avoid adding the same event node multiple times via symlinks
+            let mut added_nodes = std::collections::HashSet::new();
 
-            info!("Input: Scanning /dev/input/by-path/ for MOUSE...");
+            info!("Input: Scanning /dev/input/by-path/...");
             if let Ok(entries) = std::fs::read_dir("/dev/input/by-path/") {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     let path_str = path.to_string_lossy();
-                    if path_str.contains("-event-mouse") {
-                        if path_str.contains("i8042") || path_str.contains("acpi") {
-                            info!("Input: Skipping known problematic legacy/ACPI MOUSE device {:?}", path_str);
-                            continue;
+                    
+                    // Skip legacy/ACPI that cause hangs
+                    if path_str.contains("i8042") || path_str.contains("acpi") {
+                        continue;
+                    }
+
+                    if path_str.contains("-event-kbd") || path_str.contains("-event-mouse") {
+                        // Resolve symlink to see the real eventX node
+                        if let Ok(real_path) = std::fs::canonicalize(&path) {
+                            if added_nodes.contains(&real_path) {
+                                continue;
+                            }
+                            info!("Input: Registering device {:?} (Target: {:?})", path_str, real_path);
+                            libinput_context.path_add_device(&path_str);
+                            added_nodes.insert(real_path);
+                            info!("Input: path_add_device returned.");
                         }
-                        info!("Input: Calling path_add_device for MOUSE {:?}", path_str);
-                        libinput_context.path_add_device(&path_str);
-                        info!("Input: path_add_device returned for MOUSE {:?}", path_str);
                     }
                 }
             }
