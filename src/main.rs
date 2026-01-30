@@ -673,17 +673,27 @@ fn main() -> anyhow::Result<()> {
             // }
         }
 
-        // Debug: Log loop iteration every 100 frames to verify event loop is running
+        // Debug: Log loop iteration to verify event loop is running
         static mut LOOP_COUNT: u64 = 0;
         unsafe {
             LOOP_COUNT += 1;
-            if LOOP_COUNT % 100 == 0 {
+            // Log first 5 iterations and then every 100
+            if LOOP_COUNT <= 5 || LOOP_COUNT % 100 == 0 {
                 info!("Flora: Main loop iteration {}", LOOP_COUNT);
             }
         }
 
         // First: Accept new connections and process input events
-        event_loop.dispatch(Duration::from_millis(16), &mut state)?;
+        info!("Flora: BEFORE event_loop.dispatch()");
+        match event_loop.dispatch(Duration::from_millis(16), &mut state) {
+            Ok(_) => {
+                info!("Flora: AFTER event_loop.dispatch() - OK");
+            },
+            Err(e) => {
+                error!("Flora: event_loop.dispatch() FAILED: {:?}", e);
+                break;
+            }
+        }
         
         // Second: Dispatch Wayland protocol messages from connected clients
         match display.try_borrow_mut() {
