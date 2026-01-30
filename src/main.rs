@@ -36,14 +36,26 @@ use smithay::{
             primary_selection::{PrimarySelectionState, PrimarySelectionHandler},
         },
         output::OutputHandler,
-        text_input::{TextInputManagerState},
+        text_input::{TextInputManagerState, TextInputSeat},
     },
+};
+
+use smithay::reexports::input::{
+    Event as LibinputEvent, 
+    event::{
+        EventTrait, 
+        keyboard::{KeyboardEventTrait, KeyState}, 
+        pointer::{PointerEventTrait, ButtonState, PointerEvent},
+        device::{DeviceEvent, DeviceAddedEvent},
+    },
+};
+use smithay::{
     output::{Output, PhysicalProperties, Subpixel, Mode as OutputMode},
     input::{SeatState, SeatHandler, Seat},
     input::keyboard::FilterResult,
     utils::SERIAL_COUNTER,
 };
-use tracing::{info, warn, error, debug};
+use tracing::{info, warn, error};
 use std::{time::Duration, sync::Arc, path::PathBuf, fs::OpenOptions};
 
 pub struct Window {
@@ -92,10 +104,16 @@ impl SeatHandler for FloraState {
         &mut self.seat_state
     }
 
-    fn focus_changed(&mut self, _seat: &Seat<Self>, focused: Option<&Self::KeyboardFocus>) {
+    fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&Self::KeyboardFocus>) {
         info!("Focus: Changed to {:?}", focused);
-        // Focus logic: Smithay 0.7 delegate often handles focus automatically,
-        // or it might be managed by the shell. Manual focus code removed to verify default behavior.
+        // In Smithay 0.7.0, we must manually notify the TextInputHandle of focus changes
+        let ti = seat.text_input();
+        ti.set_focus(focused.cloned());
+        if focused.is_some() {
+            ti.enter();
+        } else {
+            ti.leave();
+        }
     }
     fn cursor_image(&mut self, _seat: &Seat<Self>, _image: smithay::input::pointer::CursorImageStatus) {}
 }
@@ -313,7 +331,7 @@ impl BufferHandler for FloraState {
 
 struct FloraLibinputInterface;
 
-impl smithay_input::LibinputInterface for FloraLibinputInterface {
+impl smithay::reexports::input::LibinputInterface for FloraLibinputInterface {
     fn open_restricted(&mut self, path: &std::path::Path, _flags: i32) -> Result<std::os::unix::io::OwnedFd, i32> {
         info!("Libinput: Opening {:?} (Read-Write for Grab)", path);
         let result = OpenOptions::new()
@@ -631,19 +649,28 @@ fn main() -> anyhow::Result<()> {
                         error!("Input Thread: Libinput dispatch error: {:?}", e);
                     }
                     for event in &mut libinput {
-                        use smithay::reexports::input::Event as LibinputEvent;
-                        use smithay::reexports::input::event::keyboard::KeyboardEventTrait as _;
-                        use smithay::reexports::input::event::pointer::PointerEventTrait as _;
                         match event {
+                            LibinputEvent::Device(DeviceEvent::Added(d)) => {
+                                if let Some(name) = d.device().name() {
+                                    info!("Input Thread: Event: DeviceAdded({:?})", name);
+                                } else {
+                                    info!("Input Thread: Event: DeviceAdded(Unknown)");
+                                }
+                            }
                             LibinputEvent::Keyboard(kb) => {
-                                debug!("Input Thread: Raw Keyboard Event: key={}", kb.key());
-                                let _ = input_sender.send(FloraInputEvent::Keyboard { keycode: kb.key(), pressed: kb.key_state() == smithay::reexports::input::event::keyboard::KeyState::Pressed, time: kb.time() as u32 });
+                                info!("Input Thread: Raw Keyboard: key={} state={:?}", kb.key(), kb.key_state());
+                                let _ = input_sender.send(FloraInputEvent::Keyboard { keycode: kb.key(), pressed: kb.key_state() == KeyState::Pressed, time: kb.time() as u32 });
                             }
                             LibinputEvent::Pointer(ptr) => {
-                                use smithay::reexports::input::event::pointer::PointerEvent;
                                 match ptr {
-                                    PointerEvent::Motion(m) => { let _ = input_sender.send(FloraInputEvent::PointerMotion { delta: (m.dx(), m.dy()).into(), time: m.time() as u32 }); }
-                                    PointerEvent::Button(b) => { let _ = input_sender.send(FloraInputEvent::PointerButton { button: b.button(), pressed: b.button_state() == smithay::reexports::input::event::pointer::ButtonState::Pressed, time: b.time() as u32 }); }
+                                    PointerEvent::Motion(m) => {
+                                        info!("Input Thread: Raw Motion: dx={} dy={}", m.dx(), m.dy());
+                                        let _ = input_sender.send(FloraInputEvent::PointerMotion { delta: (m.dx(), m.dy()).into(), time: m.time() as u32 });
+                                    }
+                                    PointerEvent::Button(b) => {
+                                        info!("Input Thread: Raw Button: button={} state={:?}", b.button(), b.button_state());
+                                        let _ = input_sender.send(FloraInputEvent::PointerButton { button: b.button(), pressed: b.button_state() == ButtonState::Pressed, time: b.time() as u32 });
+                                    }
                                     _ => {}
                                 }
                             }
