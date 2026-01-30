@@ -22,7 +22,7 @@ use smithay::{
     },
     utils::{DeviceFd, Transform, Size, Scale, Physical, Point},
     wayland::{
-        compositor::{CompositorState, CompositorHandler, CompositorClientState},
+        compositor::{CompositorState, CompositorHandler, CompositorClientState, with_surface_tree_downward, TraversalAction, SurfaceAttributes},
         socket::ListeningSocketSource,
         shell::xdg::{XdgShellState, XdgShellHandler, ToplevelSurface, PopupSurface, PositionerState},
         shm::{ShmState, ShmHandler},
@@ -396,7 +396,7 @@ fn main() -> anyhow::Result<()> {
                    elements.extend(surface_elements);
                }
                
-                // Use DrmCompositor to render a frame with surface elements
+               // Use DrmCompositor to render a frame with surface elements
                 let _ = compositor.render_frame::<GlowRenderer, WaylandSurfaceRenderElement<GlowRenderer>>(
                     renderer,
                     &elements,
@@ -404,6 +404,29 @@ fn main() -> anyhow::Result<()> {
                     smithay::backend::drm::compositor::FrameFlags::empty(),
                 );
                 let _ = compositor.commit_frame();
+                
+                // Send frame callbacks to notify clients we're done rendering
+                let time = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u32;
+                    
+                for toplevel in &state.toplevels {
+                    let surface = toplevel.wl_surface();
+                    with_surface_tree_downward(
+                        surface,
+                        (),
+                        |_, _, _| TraversalAction::DoChildren(()),
+                        |_, states, _| {
+                            let mut guard = states.cached_state.get::<SurfaceAttributes>();
+                            let attrs = guard.current();
+                            for callback in attrs.frame_callbacks.drain(..) {
+                                callback.done(time);
+                            }
+                        },
+                        |_, _, _| true,
+                    );
+                }
             }
         }
 
