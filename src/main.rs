@@ -376,9 +376,12 @@ fn main() -> anyhow::Result<()> {
 
     // 6. Setup Display Event Source - Wake up event loop when clients send data
     use smithay::reexports::calloop::generic::Generic;
+    use std::os::unix::io::AsFd;
     
+    // Clone the poll FD so event source and manual dispatch don't conflict
     let poll_fd = display.backend().poll_fd();
-    let generic_display = Generic::new(poll_fd, Interest::READ, Mode::Level);
+    let poll_fd_clone = poll_fd.try_clone()?;
+    let generic_display = Generic::new(poll_fd_clone, Interest::READ, Mode::Level);
     
     handle.insert_source(generic_display, |_event, _metadata, _state| {
         // Don't dispatch here - just wake up the event loop
