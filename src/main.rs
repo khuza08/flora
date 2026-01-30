@@ -27,6 +27,7 @@ use smithay::{
         shell::xdg::{XdgShellState, XdgShellHandler, ToplevelSurface, PopupSurface, PositionerState},
         shm::{ShmState, ShmHandler},
         buffer::BufferHandler,
+        selection::{SelectionHandler, data_device::{DataDeviceState, DataDeviceHandler, ClientDndGrabHandler, ServerDndGrabHandler}},
     },
     input::{SeatState, SeatHandler, Seat},
     backend::input::{
@@ -43,6 +44,7 @@ pub struct FloraState {
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
     pub shm_state: ShmState,
+    pub data_device_state: DataDeviceState,
     pub seat_state: SeatState<Self>,
     pub seat: Seat<Self>,
     pub should_stop: bool,
@@ -73,6 +75,23 @@ impl SeatHandler for FloraState {
     fn cursor_image(&mut self, _seat: &Seat<Self>, _image: smithay::input::pointer::CursorImageStatus) {}
 }
 
+// Data device (clipboard) support
+impl SelectionHandler for FloraState {
+    type SelectionUserData = ();
+}
+
+impl ClientDndGrabHandler for FloraState {}
+impl ServerDndGrabHandler for FloraState {}
+
+impl DataDeviceHandler for FloraState {
+    fn data_device_state(&self) -> &DataDeviceState {
+        &self.data_device_state
+    }
+}
+
+use smithay::delegate_data_device;
+delegate_data_device!(FloraState);
+
 pub struct FloraClientData {
     pub compositor_state: CompositorClientState,
 }
@@ -84,6 +103,7 @@ impl FloraState {
         let compositor_state = CompositorState::new::<Self>(dh);
         let xdg_shell_state = XdgShellState::new::<Self>(dh);
         let shm_state = ShmState::new::<Self>(dh, vec![]);
+        let data_device_state = DataDeviceState::new::<Self>(dh);
         let mut seat_state = SeatState::new();
         let seat = seat_state.new_seat("seat0");
 
@@ -92,6 +112,7 @@ impl FloraState {
             compositor_state,
             xdg_shell_state,
             shm_state,
+            data_device_state,
             seat_state,
             seat,
             should_stop: false,
