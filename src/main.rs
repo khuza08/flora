@@ -640,9 +640,10 @@ fn main() -> anyhow::Result<()> {
                             }
 
                             info!("Input: Registering device {:?} (Target: {:?})", path_str, real_path);
-                            libinput_context.path_add_device(&path_str);
-                            added_nodes.insert(real_path);
-                            info!("Input: path_add_device returned.");
+                            // SKIP for testing - path_add_device blocks for minutes in VM!
+                            // libinput_context.path_add_device(&path_str);
+                            // added_nodes.insert(real_path);
+                            info!("Input: path_add_device SKIPPED for Wayland testing.");
                         }
                     }
                 }
