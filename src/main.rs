@@ -10,6 +10,7 @@ use smithay::{
             ImportDma, ImportAll,
             element::surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
             element::Kind,
+            utils::on_commit_buffer_handler,
         },
     },
     output::OutputModeSource,
@@ -114,8 +115,11 @@ impl CompositorHandler for FloraState {
         &client.get_data::<FloraClientData>().unwrap().compositor_state
     }
 
-    // Callback when a client commits a new surface
-    fn commit(&mut self, _surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface) {}
+    // Callback when a client commits a new surface buffer
+    fn commit(&mut self, surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface) {
+        // Register the buffer with Smithay's renderer infrastructure
+        on_commit_buffer_handler::<Self>(surface);
+    }
 }
 
 // Delegate macro to connect FloraState with Smithay
