@@ -580,8 +580,8 @@ fn main() -> anyhow::Result<()> {
             let mut libinput_context = smithay::reexports::input::Libinput::new_from_path(FloraLibinputInterface);
             
             // Manually add devices to avoid udev_assign_seat hang
-            info!("Input: Manually adding devices from /dev/input/...");
-            for i in 0..32 {
+            info!("Input: Manually adding devices from /dev/input/ (skipping event0)...");
+            for i in 1..32 {
                 let path_str = format!("/dev/input/event{}", i);
                 if std::path::Path::new(&path_str).exists() {
                     info!("Input: Calling path_add_device for {:?}", path_str);
