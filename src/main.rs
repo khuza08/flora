@@ -345,7 +345,8 @@ fn main() -> anyhow::Result<()> {
         let client_data = FloraClientData {
             compositor_state: CompositorClientState::default(),
         };
-        if let Err(e) = state.display_handle.insert_client(client_stream, Arc::new(client_data)) {
+        let mut dh = state.display_handle.clone();
+        if let Err(e) = dh.insert_client(client_stream, Arc::new(client_data)) {
             warn!("Failed to insert client: {:?}", e);
         } else {
             info!("New client connected to Wayland socket!");
@@ -384,7 +385,7 @@ fn main() -> anyhow::Result<()> {
     
     // Create owned FD from poll_fd to avoid borrow lifetime issues
     use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd};
-    let raw_fd = display.borrow().backend().poll_fd().as_raw_fd();
+    let raw_fd = display.borrow_mut().backend().poll_fd().as_raw_fd();
     let owned_fd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
     let generic_display = Generic::new(owned_fd, Interest::READ, Mode::Level);
     
