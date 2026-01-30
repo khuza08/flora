@@ -297,7 +297,7 @@ impl smithay_input::LibinputInterface for FloraLibinputInterface {
         info!("Libinput: Opening {:?}", path);
         let result = OpenOptions::new()
             .read(true)
-            .write(true) // Re-enable write access
+            .write(false) 
             .open(path);
         
         match result {
@@ -639,11 +639,10 @@ fn main() -> anyhow::Result<()> {
                                 continue;
                             }
 
-                            info!("Input: Registering device {:?} (Target: {:?})", path_str, real_path);
-                            // Re-enable for testing but with extra caution
+                            info!("Input: Calling path_add_device for {:?} (Target: {:?})", path_str, real_path);
                             libinput_context.path_add_device(&path_str);
+                            info!("Input: path_add_device for {:?} RETURNED.", path_str);
                             added_nodes.insert(real_path);
-                            info!("Input: path_add_device returned successfully.");
                         }
                     }
                 }
