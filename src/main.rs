@@ -36,7 +36,7 @@ use smithay::{
             primary_selection::{PrimarySelectionState, PrimarySelectionHandler},
         },
         output::OutputHandler,
-        text_input::{TextInputManagerState},
+        text_input::{TextInputManagerState, TextInputSeat},
     },
     output::{Output, PhysicalProperties, Subpixel, Mode as OutputMode},
     input::{SeatState, SeatHandler, Seat},
@@ -92,7 +92,15 @@ impl SeatHandler for FloraState {
         &mut self.seat_state
     }
 
-    fn focus_changed(&mut self, _seat: &Seat<Self>, _focused: Option<&Self::KeyboardFocus>) {}
+    fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&Self::KeyboardFocus>) {
+        let ti = seat.text_input();
+        ti.set_focus(focused.cloned());
+        if focused.is_some() {
+            ti.enter();
+        } else {
+            ti.leave();
+        }
+    }
     fn cursor_image(&mut self, _seat: &Seat<Self>, _image: smithay::input::pointer::CursorImageStatus) {}
 }
 
