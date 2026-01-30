@@ -349,25 +349,14 @@ fn main() -> anyhow::Result<()> {
         }
     }).map_err(|_e| anyhow::anyhow!("Failed to insert socket source"))?;
 
-    // 5. Setup Display Dispatching - CRITICAL: Clients won't work without this
-    handle.insert_source(
-        smithay::reexports::calloop::generic::Generic::new(display.backend().poll_fd(), Interest::READ, Mode::Level),
-        move |_, _, state| {
-            /* info!("Wayland: Dispatching clients..."); */
-            unsafe {
-                let mut dh = state.display_handle.clone();
-                let _ = dh.dispatch_clients(state);
-                let _ = dh.flush_clients();
-            }
-            Ok(PostAction::Continue)
-        },
-    ).map_err(|_e| anyhow::anyhow!("Failed to insert display source"))?;
+    // 5. Initialize Udev Backend (to detect displays in VM)
+    let udev = UdevBackend::new("seat0")?;
     
     // Scan for existing devices since Added events only trigger for new hotplugged devices
-    for (_device_id, path) in udev.device_list() {
+    for (_device_id, path): (smithay::backend::udev::DeviceId, std::path::PathBuf) in udev.device_list() {
         info!("Existing device detected: {:?}", path);
         if path.to_string_lossy().contains("card") || path.to_string_lossy().contains("render") {
-            state.drm_devices.push(path.to_path_buf());
+            state.drm_devices.push(path);
         }
     }
 
@@ -385,7 +374,19 @@ fn main() -> anyhow::Result<()> {
         }
     }).map_err(|_e| anyhow::anyhow!("Failed to insert udev source"))?;
 
-    let udev = UdevBackend::new("seat0")?;
+    // 6. Setup Display Dispatching - CRITICAL: Clients won't work without this
+    handle.insert_source(
+        smithay::reexports::calloop::generic::Generic::new(display, Interest::READ, Mode::Level),
+        |_, display, state| {
+            unsafe {
+                let display = display.get_mut();
+                let _ = display.dispatch_clients(state);
+                let _ = display.flush_clients();
+            }
+            Ok(PostAction::Continue)
+        },
+    ).map_err(|_e| anyhow::anyhow!("Failed to insert display source"))?;
+
     
 
 
