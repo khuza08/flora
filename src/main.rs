@@ -170,8 +170,11 @@ impl FloraState {
         let primary_selection_state = PrimarySelectionState::new::<Self>(dh);
         let xdg_decoration_state = XdgDecorationState::new::<Self>(dh);
         let mut seat_state = SeatState::new();
-        // Use new_wl_seat to register wl_seat as a global for clients to bind
         let seat = seat_state.new_wl_seat(dh, "seat0");
+        
+        // Add initial capabilities
+        seat.add_keyboard(Default::default(), 200, 25).ok();
+        seat.add_pointer();
         
         // Create output and register as global for clients
         let output = Output::new(
@@ -602,11 +605,8 @@ fn main() -> anyhow::Result<()> {
         }
 
         if !input_initialized && state.renderer.is_some() {
-            info!("Graphics ready, initializing input...");
-            
-            // 6. Initialize Input Protocols
-            state.seat.add_keyboard(Default::default(), 200, 25).ok();
-            state.seat.add_pointer();
+            info!("Graphics ready, initializing input backend (NOTE: This may take 30-60s in VM, please wait)...");
+            // Capabilities already added in FloraState::new
 
             info!("Input: Initializing Libinput context (Path-based)...");
             let mut libinput_context = smithay::reexports::input::Libinput::new_from_path(FloraLibinputInterface);
@@ -655,19 +655,24 @@ fn main() -> anyhow::Result<()> {
                     InputEvent::Keyboard { event } => {
                         let keycode = event.key_code();
                         let key_state = event.state();
+                        info!("Input EVENT: Keyboard key={} state={:?}", keycode, key_state);
                         let serial = SERIAL_COUNTER.next_serial();
                         let time = event.time() as u32;
                         if let Some(keyboard) = state.seat.get_keyboard() {
                             keyboard.input::<(), _>(state, keycode, key_state, serial, time, |_, _, _| FilterResult::Forward);
+                        } else {
+                            warn!("Input: Received keyboard event but seat has no keyboard!");
                         }
                     }
                     InputEvent::PointerMotion { event } => {
-                        state.pointer_location += event.delta().to_physical(1.0);
+                        let delta = event.delta().to_physical(1.0);
+                        state.pointer_location += delta;
                         state.pointer_location.x = state.pointer_location.x.max(0.0).min(1280.0);
                         state.pointer_location.y = state.pointer_location.y.max(0.0).min(800.0);
                         
                         if let Some(pointer) = state.seat.get_pointer() {
                             use smithay::input::pointer::MotionEvent;
+                            
                             // Find surface under pointer - for now, always use the first toplevel if it exists
                             // and the pointer is roughly in the middle (where we render it)
                             let under = state.toplevels.first().map(|surface| {
@@ -682,6 +687,10 @@ fn main() -> anyhow::Result<()> {
                         }
                     }
                     InputEvent::PointerButton { event } => {
+                        let button = event.button_code();
+                        let state_btn = event.state();
+                        info!("Input EVENT: PointerButton button={} state={:?}", button, state_btn);
+                        
                         if let Some(pointer) = state.seat.get_pointer() {
                             use smithay::input::pointer::ButtonEvent;
                             
