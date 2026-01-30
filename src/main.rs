@@ -576,15 +576,21 @@ fn main() -> anyhow::Result<()> {
             state.seat.add_keyboard(Default::default(), 200, 25).ok();
             state.seat.add_pointer();
 
-            info!("Input: Initializing Libinput context...");
-            let mut libinput_context = smithay::reexports::input::Libinput::new_with_udev(FloraLibinputInterface);
+            info!("Input: Initializing Libinput context (Path-based)...");
+            let mut libinput_context = smithay::reexports::input::Libinput::new_from_path(FloraLibinputInterface);
             
-            info!("Input: Assigning 'seat0' to Libinput...");
-            if let Err(err) = libinput_context.udev_assign_seat("seat0") {
-                warn!("Input: Failed to assign seat0: {:?}", err);
+            // Manually add devices to avoid udev_assign_seat hang
+            info!("Input: Manually adding devices from /dev/input/...");
+            for i in 0..32 {
+                let path_str = format!("/dev/input/event{}", i);
+                if std::path::Path::new(&path_str).exists() {
+                    info!("Input: Registering device {:?}", path_str);
+                    libinput_context.path_add_device(&path_str);
+                }
             }
             
             let libinput_backend = LibinputInputBackend::new(libinput_context);
+            info!("Input: Libinput backend created from path.");
             handle.insert_source(libinput_backend, |event, _, state| {
                 match event {
                     InputEvent::Keyboard { event } => {
