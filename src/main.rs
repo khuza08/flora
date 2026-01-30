@@ -28,7 +28,9 @@ use smithay::{
         shm::{ShmState, ShmHandler},
         buffer::BufferHandler,
         selection::{SelectionHandler, data_device::{DataDeviceState, DataDeviceHandler, ClientDndGrabHandler, ServerDndGrabHandler}},
+        output::OutputHandler,
     },
+    output::{Output, PhysicalProperties, Subpixel, Mode as OutputMode},
     input::{SeatState, SeatHandler, Seat},
     backend::input::{
         InputEvent, Event,
@@ -47,6 +49,7 @@ pub struct FloraState {
     pub data_device_state: DataDeviceState,
     pub seat_state: SeatState<Self>,
     pub seat: Seat<Self>,
+    pub output: Option<Output>,
     pub should_stop: bool,
     pub drm_devices: Vec<PathBuf>,
     pub renderer: Option<GlowRenderer>,
@@ -92,6 +95,12 @@ impl DataDeviceHandler for FloraState {
 use smithay::delegate_data_device;
 delegate_data_device!(FloraState);
 
+// Output (monitor) global support
+impl OutputHandler for FloraState {}
+
+use smithay::delegate_output;
+delegate_output!(FloraState);
+
 pub struct FloraClientData {
     pub compositor_state: CompositorClientState,
 }
@@ -107,6 +116,26 @@ impl FloraState {
         let mut seat_state = SeatState::new();
         // Use new_wl_seat to register wl_seat as a global for clients to bind
         let seat = seat_state.new_wl_seat(dh, "seat0");
+        
+        // Create output and register as global for clients
+        let output = Output::new(
+            "Virtual-1".to_string(),
+            PhysicalProperties {
+                size: (0, 0).into(), // Unknown physical size for virtual display
+                subpixel: Subpixel::Unknown,
+                make: "Flora".to_string(),
+                model: "Virtual Display".to_string(),
+            },
+        );
+        output.create_global::<Self>(dh);
+        // Set initial mode with reasonable defaults (will be updated when DRM initializes)
+        output.change_current_state(
+            Some(OutputMode { size: (1280, 800).into(), refresh: 60000 }),
+            Some(Transform::Normal),
+            Some(smithay::output::Scale::Integer(1)),
+            Some((0, 0).into()),
+        );
+        output.set_preferred(OutputMode { size: (1280, 800).into(), refresh: 60000 });
 
         Self {
             display_handle: dh.clone(),
@@ -116,6 +145,7 @@ impl FloraState {
             data_device_state,
             seat_state,
             seat,
+            output: Some(output),
             should_stop: false,
             drm_devices: Vec::new(),
             renderer: None,
