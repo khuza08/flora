@@ -170,7 +170,7 @@ impl FloraState {
         let primary_selection_state = PrimarySelectionState::new::<Self>(dh);
         let xdg_decoration_state = XdgDecorationState::new::<Self>(dh);
         let mut seat_state = SeatState::new();
-        let seat = seat_state.new_wl_seat(dh, "seat0");
+        let mut seat = seat_state.new_wl_seat(dh, "seat0");
         
         // Add initial capabilities
         seat.add_keyboard(Default::default(), 200, 25).ok();
@@ -655,7 +655,7 @@ fn main() -> anyhow::Result<()> {
                     InputEvent::Keyboard { event } => {
                         let keycode = event.key_code();
                         let key_state = event.state();
-                        info!("Input EVENT: Keyboard key={} state={:?}", keycode, key_state);
+                        info!("Input EVENT: Keyboard key={:?} state={:?}", keycode, key_state);
                         let serial = SERIAL_COUNTER.next_serial();
                         let time = event.time() as u32;
                         if let Some(keyboard) = state.seat.get_keyboard() {
