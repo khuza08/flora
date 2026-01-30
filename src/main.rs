@@ -612,7 +612,7 @@ fn main() -> anyhow::Result<()> {
             let mut libinput_context = smithay::reexports::input::Libinput::new_from_path(FloraLibinputInterface);
             
             // Avoid adding the same event node multiple times via symlinks
-            let mut added_nodes = std::collections::HashSet::new();
+            let mut added_nodes: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
 
             info!("Input: Scanning /dev/input/by-path/...");
             if let Ok(entries) = std::fs::read_dir("/dev/input/by-path/") {
