@@ -243,6 +243,7 @@ impl XdgShellHandler for FloraState {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
+        info!("XdgShell: New toplevel surface created (Client connected)!");
         // Configure the toplevel with a reasonable default size
         surface.with_pending_state(|state| {
             state.size = Some((800, 600).into());
@@ -258,7 +259,7 @@ impl XdgShellHandler for FloraState {
             keyboard.set_focus(self, Some(wl_surface), serial);
         }
         
-        info!("New toplevel surface created and focused");
+        info!("XdgShell: New toplevel surface created and focused.");
     }
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
@@ -651,6 +652,14 @@ fn main() -> anyhow::Result<()> {
             
             input_initialized = true;
             info!("Input initialization fully finished.");
+
+            // Auto-spawn foot for testing
+            info!("Flora: Spawning foot terminal...");
+            use std::process::Command;
+            match Command::new("foot").spawn() {
+                Ok(_) => info!("Flora: foot spawned successfully."),
+                Err(e) => warn!("Flora: Failed to spawn foot: {:?}", e),
+            }
         }
 
         event_loop.dispatch(Duration::from_millis(16), &mut state)?;
