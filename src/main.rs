@@ -673,6 +673,15 @@ fn main() -> anyhow::Result<()> {
             // }
         }
 
+        // Debug: Log loop iteration every 100 frames to verify event loop is running
+        static mut LOOP_COUNT: u64 = 0;
+        unsafe {
+            LOOP_COUNT += 1;
+            if LOOP_COUNT % 100 == 0 {
+                info!("Flora: Main loop iteration {}", LOOP_COUNT);
+            }
+        }
+
         // First: Accept new connections and process input events
         event_loop.dispatch(Duration::from_millis(16), &mut state)?;
         
