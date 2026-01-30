@@ -36,14 +36,14 @@ use smithay::{
             primary_selection::{PrimarySelectionState, PrimarySelectionHandler},
         },
         output::OutputHandler,
-        text_input::{TextInputManagerState, TextInputSeat},
+        text_input::{TextInputManagerState},
     },
     output::{Output, PhysicalProperties, Subpixel, Mode as OutputMode},
     input::{SeatState, SeatHandler, Seat},
     input::keyboard::FilterResult,
     utils::SERIAL_COUNTER,
 };
-use tracing::{info, warn, error};
+use tracing::{info, warn, error, debug};
 use std::{time::Duration, sync::Arc, path::PathBuf, fs::OpenOptions};
 
 pub struct Window {
@@ -92,15 +92,10 @@ impl SeatHandler for FloraState {
         &mut self.seat_state
     }
 
-    fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&Self::KeyboardFocus>) {
+    fn focus_changed(&mut self, _seat: &Seat<Self>, focused: Option<&Self::KeyboardFocus>) {
         info!("Focus: Changed to {:?}", focused);
-        let ti = seat.text_input();
-        ti.set_focus(focused.cloned());
-        if focused.is_some() {
-            ti.enter();
-        } else {
-            ti.leave();
-        }
+        // Focus logic: Smithay 0.7 delegate often handles focus automatically,
+        // or it might be managed by the shell. Manual focus code removed to verify default behavior.
     }
     fn cursor_image(&mut self, _seat: &Seat<Self>, _image: smithay::input::pointer::CursorImageStatus) {}
 }
@@ -320,10 +315,10 @@ struct FloraLibinputInterface;
 
 impl smithay_input::LibinputInterface for FloraLibinputInterface {
     fn open_restricted(&mut self, path: &std::path::Path, _flags: i32) -> Result<std::os::unix::io::OwnedFd, i32> {
-        info!("Libinput: Opening {:?}", path);
+        info!("Libinput: Opening {:?} (Read-Write for Grab)", path);
         let result = OpenOptions::new()
             .read(true)
-            .write(false) 
+            .write(true) 
             .open(path);
         
         match result {
@@ -620,23 +615,28 @@ fn main() -> anyhow::Result<()> {
             // Background Thread
             std::thread::spawn(move || {
                 let mut libinput = smithay::reexports::input::Libinput::new_from_path(FloraLibinputInterface);
+                info!("Input Thread: Started and scanning devices...");
                 if let Ok(entries) = std::fs::read_dir("/dev/input/by-path/") {
                     for entry in entries.flatten() {
                         let path = entry.path().to_string_lossy().into_owned();
                         if path.contains("acpi") || path.contains("i8042-serio-1-event-mouse") { continue; }
                         if path.contains("-event-kbd") || path.contains("-event-mouse") {
+                            info!("Input Thread: Adding device: {}", path);
                             libinput.path_add_device(&path);
                         }
                     }
                 }
                 loop {
-                    let _ = libinput.dispatch();
+                    if let Err(e) = libinput.dispatch() {
+                        error!("Input Thread: Libinput dispatch error: {:?}", e);
+                    }
                     for event in &mut libinput {
                         use smithay::reexports::input::Event as LibinputEvent;
                         use smithay::reexports::input::event::keyboard::KeyboardEventTrait as _;
                         use smithay::reexports::input::event::pointer::PointerEventTrait as _;
                         match event {
                             LibinputEvent::Keyboard(kb) => {
+                                debug!("Input Thread: Raw Keyboard Event: key={}", kb.key());
                                 let _ = input_sender.send(FloraInputEvent::Keyboard { keycode: kb.key(), pressed: kb.key_state() == smithay::reexports::input::event::keyboard::KeyState::Pressed, time: kb.time() as u32 });
                             }
                             LibinputEvent::Pointer(ptr) => {
