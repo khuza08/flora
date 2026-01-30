@@ -93,6 +93,7 @@ impl SeatHandler for FloraState {
     }
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&Self::KeyboardFocus>) {
+        info!("Focus: Changed to {:?}", focused);
         let ti = seat.text_input();
         ti.set_focus(focused.cloned());
         if focused.is_some() {
@@ -276,10 +277,18 @@ impl XdgShellHandler for FloraState {
         });
         surface.send_configure();
 
+        let wl_surface = surface.wl_surface().clone();
         self.windows.push(Window {
             toplevel: surface,
             location: (100, 100).into(),
         });
+
+        // Set keyboard focus to the new window
+        let serial = SERIAL_COUNTER.next_serial();
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            keyboard.set_focus(self, Some(wl_surface), serial);
+        }
+
         self.needs_redraw = true;
     }
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
@@ -521,6 +530,7 @@ fn main() -> anyhow::Result<()> {
                 if let smithay::reexports::calloop::channel::Event::Msg(input_event) = event {
                     match input_event {
                         FloraInputEvent::Keyboard { keycode, pressed, time } => {
+                            info!("🎹 Keyboard event received! Key={} Pressed={}", keycode, pressed);
                             let serial = SERIAL_COUNTER.next_serial();
                             let state_enum = if pressed { smithay::backend::input::KeyState::Pressed } else { smithay::backend::input::KeyState::Released };
                             if let Some(keyboard) = state.seat.get_keyboard() {
