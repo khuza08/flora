@@ -328,9 +328,14 @@ fn main() -> anyhow::Result<()> {
     // 2. Setup Wayland Display (wrapped for shared mutable access)
     use std::rc::Rc;
     use std::cell::RefCell;
+    use std::os::unix::io::AsFd;
     
-    let display = Rc::new(RefCell::new(Display::new()?));
-    let dh = display.borrow().handle();
+    // Create display first, extract poll_fd for event source, then wrap
+    let mut display_raw = Display::new()?;
+    let poll_fd = display_raw.backend().poll_fd().as_fd().try_clone_to_owned()
+        .map_err(|e| anyhow::anyhow!("Failed to clone display poll_fd: {:?}", e))?;
+    let dh = display_raw.handle();
+    let display = Rc::new(RefCell::new(display_raw));
     
     // 3. Initialize State
     let mut state = FloraState::new(&dh);
@@ -356,6 +361,32 @@ fn main() -> anyhow::Result<()> {
         }
         info!("Socket callback COMPLETED - returning from callback");
     }).map_err(|_e| anyhow::anyhow!("Failed to insert socket source"))?;
+
+    // 4b. Setup Display Event Source - Wake up when connected clients send data
+    // This is CRITICAL: ListeningSocketSource only handles NEW connections
+    // We need this to process data FROM connected clients (get_registry, sync, etc.)
+    use smithay::reexports::calloop::generic::Generic;
+    
+    let display_clone = display.clone();
+    // poll_fd was extracted earlier before wrapping Display in RefCell
+    
+    handle.insert_source(
+        Generic::new(poll_fd, Interest::READ, Mode::Level),
+        move |_event, _metadata, state| {
+            info!("Display poll_fd readable - processing client messages");
+            if let Ok(mut disp) = display_clone.try_borrow_mut() {
+                if let Err(e) = disp.dispatch_clients(state) {
+                    error!("Display source: dispatch_clients error: {:?}", e);
+                }
+                if let Err(e) = disp.flush_clients() {
+                    error!("Display source: flush_clients error: {:?}", e);
+                }
+            } else {
+                warn!("Display source: Could not borrow display");
+            }
+            Ok(PostAction::Continue)
+        }
+    ).map_err(|_e| anyhow::anyhow!("Failed to insert display event source"))?;
 
     // 5. Initialize Udev Backend (to detect displays in VM)
     let udev = UdevBackend::new("seat0")?;
