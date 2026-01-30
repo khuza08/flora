@@ -674,9 +674,18 @@ fn main() -> anyhow::Result<()> {
         event_loop.dispatch(Duration::from_millis(16), &mut state)?;
         
         // Second: Dispatch Wayland protocol messages from connected clients
-        if let Ok(mut disp) = display.try_borrow_mut() {
-            let _ = disp.dispatch_clients(&mut state);
-            let _ = disp.flush_clients();
+        match display.try_borrow_mut() {
+            Ok(mut disp) => {
+                if let Err(e) = disp.dispatch_clients(&mut state) {
+                    error!("Flora: dispatch_clients error: {:?}", e);
+                }
+                if let Err(e) = disp.flush_clients() {
+                    error!("Flora: flush_clients error: {:?}", e);
+                }
+            },
+            Err(e) => {
+                warn!("Flora: Could not borrow display: {:?}", e);
+            }
         }
     }
 
