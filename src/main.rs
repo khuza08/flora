@@ -729,12 +729,11 @@ fn main() -> anyhow::Result<()> {
             // }
         }
 
-        // Debug: Log loop iteration to verify event loop is running
         static mut LOOP_COUNT: u64 = 0;
         unsafe {
             LOOP_COUNT += 1;
-            // Log first 5 iterations and then every 100
-            if LOOP_COUNT <= 5 || LOOP_COUNT % 100 == 0 {
+            // Log first 10 iterations and then every 20
+            if LOOP_COUNT <= 10 || LOOP_COUNT % 20 == 0 {
                 info!("Flora: Main loop iteration {}", LOOP_COUNT);
             }
         }
