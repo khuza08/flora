@@ -241,7 +241,11 @@ fn main() -> anyhow::Result<()> {
         smithay::reexports::calloop::generic::Generic::new(display, Interest::READ, Mode::Level),
         |_, display, state| {
             unsafe {
-                display.get_mut().dispatch_clients(state).map(|_| PostAction::Continue)
+                // Process incoming client requests
+                let result = display.get_mut().dispatch_clients(state);
+                // CRITICAL: Flush responses back to clients
+                let _ = display.get_mut().flush_clients();
+                result.map(|_| PostAction::Continue)
             }
         },
     ).map_err(|_e| anyhow::anyhow!("Failed to insert display source"))?;
