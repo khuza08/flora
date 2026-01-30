@@ -586,6 +586,10 @@ fn main() -> anyhow::Result<()> {
                     let path = entry.path();
                     let path_str = path.to_string_lossy();
                     if path_str.contains("-event-kbd") {
+                        if path_str.contains("i8042") || path_str.contains("acpi") {
+                            info!("Input: Skipping known problematic legacy/ACPI device {:?}", path_str);
+                            continue;
+                        }
                         info!("Input: Calling path_add_device for KBD {:?}", path_str);
                         libinput_context.path_add_device(&path_str);
                         info!("Input: path_add_device returned for KBD {:?}", path_str);
@@ -599,6 +603,10 @@ fn main() -> anyhow::Result<()> {
                     let path = entry.path();
                     let path_str = path.to_string_lossy();
                     if path_str.contains("-event-mouse") {
+                        if path_str.contains("i8042") || path_str.contains("acpi") {
+                            info!("Input: Skipping known problematic legacy/ACPI MOUSE device {:?}", path_str);
+                            continue;
+                        }
                         info!("Input: Calling path_add_device for MOUSE {:?}", path_str);
                         libinput_context.path_add_device(&path_str);
                         info!("Input: path_add_device returned for MOUSE {:?}", path_str);
