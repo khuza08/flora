@@ -640,10 +640,10 @@ fn main() -> anyhow::Result<()> {
                             }
 
                             info!("Input: Registering device {:?} (Target: {:?})", path_str, real_path);
-                            // SKIP for testing - path_add_device blocks for minutes in VM!
-                            // libinput_context.path_add_device(&path_str);
-                            // added_nodes.insert(real_path);
-                            info!("Input: path_add_device SKIPPED for Wayland testing.");
+                            // Re-enable for testing but with extra caution
+                            libinput_context.path_add_device(&path_str);
+                            added_nodes.insert(real_path);
+                            info!("Input: path_add_device returned successfully.");
                         }
                     }
                 }
@@ -666,9 +666,17 @@ fn main() -> anyhow::Result<()> {
                         state.pointer_location += event.delta().to_physical(1.0);
                         state.pointer_location.x = state.pointer_location.x.max(0.0).min(1280.0);
                         state.pointer_location.y = state.pointer_location.y.max(0.0).min(800.0);
+                        
                         if let Some(pointer) = state.seat.get_pointer() {
                             use smithay::input::pointer::MotionEvent;
-                            pointer.motion(state, None, &MotionEvent {
+                            
+                            // Find surface under pointer - for now, always use the first toplevel if it exists
+                            // and the pointer is roughly in the middle (where we render it)
+                            let under = state.toplevels.first().map(|surface| {
+                                (surface.wl_surface().clone(), (0, 0).into())
+                            });
+
+                            pointer.motion(state, under, &MotionEvent {
                                 location: state.pointer_location.to_logical(1.0),
                                 serial: SERIAL_COUNTER.next_serial(),
                                 time: event.time() as u32,
@@ -678,6 +686,15 @@ fn main() -> anyhow::Result<()> {
                     InputEvent::PointerButton { event } => {
                         if let Some(pointer) = state.seat.get_pointer() {
                             use smithay::input::pointer::ButtonEvent;
+                            
+                            // Ensure focus on click
+                            if let Some(surface) = state.toplevels.first() {
+                                let serial = SERIAL_COUNTER.next_serial();
+                                if let Some(keyboard) = state.seat.get_keyboard() {
+                                    keyboard.set_focus(state, Some(surface.wl_surface().clone()), serial);
+                                }
+                            }
+
                             pointer.button(state, &ButtonEvent {
                                 button: event.button_code(),
                                 state: event.state(),
