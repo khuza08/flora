@@ -7,7 +7,7 @@ use smithay::{
         egl::{EGLDisplay, EGLContext},
         renderer::{
             glow::GlowRenderer,
-            ImportDma, ImportAll,
+            ImportDma,
             element::surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
             element::Kind,
             utils::on_commit_buffer_handler,
@@ -41,9 +41,11 @@ use smithay::{
     input::{SeatState, SeatHandler, Seat},
     backend::input::{
         InputEvent, Event,
-        KeyboardKeyEvent, PointerMotionEvent, PointerButtonEvent, PointerAxisEvent,
+        KeyboardKeyEvent, PointerMotionEvent, PointerButtonEvent,
     },
     backend::libinput::LibinputInputBackend,
+    input::keyboard::FilterResult,
+    utils::SERIAL_COUNTER,
 };
 use tracing::info;
 use std::{time::Duration, sync::Arc, path::PathBuf, fs::OpenOptions};
@@ -69,6 +71,7 @@ pub struct FloraState {
     pub compositor: Option<DrmCompositor<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>>,
     // Toplevel surfaces for rendering
     pub toplevels: Vec<ToplevelSurface>,
+    pub pointer_location: Point<f64, Physical>,
 }
 
 use smithay::delegate_seat;
@@ -206,6 +209,7 @@ impl FloraState {
             _egl_display: None,
             compositor: None,
             toplevels: Vec::new(),
+            pointer_location: Point::from((0.0, 0.0)),
         }
     }
 }
@@ -242,8 +246,17 @@ impl XdgShellHandler for FloraState {
             state.size = Some((800, 600).into());
         });
         surface.send_configure();
+        
+        let wl_surface = surface.wl_surface().clone();
         self.toplevels.push(surface);
-        info!("New toplevel surface created");
+        
+        // New: Set keyboard focus to the new window
+        let serial = SERIAL_COUNTER.next_serial();
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            keyboard.set_focus(self, Some(wl_surface), serial);
+        }
+        
+        info!("New toplevel surface created and focused");
     }
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
@@ -355,12 +368,71 @@ fn main() -> anyhow::Result<()> {
         },
     ).map_err(|_e| anyhow::anyhow!("Failed to insert display source"))?;
 
-    // 6. Initialize Libinput (DISABLED - blocks on QEMU without input devices)
-    // TODO: Re-enable when running on real hardware or with input device passthrough
+    // 6. Initialize Input
     state.seat.add_keyboard(Default::default(), 200, 25)
         .map_err(|_| anyhow::anyhow!("Failed to add keyboard to seat"))?;
     state.seat.add_pointer();
-    info!("Input devices registered (libinput disabled for QEMU compatibility)");
+
+    // Create Libinput backend
+    let mut libinput_context = smithay::reexports::input::Libinput::new_with_udev(FloraLibinputInterface);
+    libinput_context.udev_assign_seat("seat0").unwrap();
+    let libinput_backend = LibinputInputBackend::new(libinput_context);
+
+    handle.insert_source(libinput_backend, |event, _, state| {
+        match event {
+            InputEvent::DeviceAdded { device } => {
+                info!("Input device added: {:?}", device);
+            }
+            InputEvent::DeviceRemoved { device } => {
+                info!("Input device removed: {:?}", device);
+            }
+            InputEvent::Keyboard { event } => {
+                let keycode = event.key_code();
+                let key_state = event.state();
+                let serial = SERIAL_COUNTER.next_serial();
+                let time = event.time() as u32;
+                
+                if let Some(keyboard) = state.seat.get_keyboard() {
+                    // Forward to client. Filter can be used for global shortcuts later.
+                    keyboard.input::<(), _>(state, keycode, key_state, serial, time, |_, _, _| {
+                        FilterResult::Forward
+                    });
+                }
+            }
+            InputEvent::PointerMotion { event } => {
+                let delta = event.delta();
+                state.pointer_location += delta.to_physical(1.0);
+                // Clamp pointer to screen (hardcoded 1280x800 for now)
+                state.pointer_location.x = state.pointer_location.x.max(0.0).min(1280.0);
+                state.pointer_location.y = state.pointer_location.y.max(0.0).min(800.0);
+                
+                if let Some(pointer) = state.seat.get_pointer() {
+                    use smithay::input::pointer::MotionEvent;
+                    let event = MotionEvent {
+                        location: state.pointer_location.to_logical(1.0),
+                        serial: SERIAL_COUNTER.next_serial(),
+                        time: event.time() as u32,
+                    };
+                    pointer.motion(state, None, &event);
+                }
+            }
+            InputEvent::PointerButton { event } => {
+                if let Some(pointer) = state.seat.get_pointer() {
+                    use smithay::input::pointer::ButtonEvent;
+                    let event = ButtonEvent {
+                        button: event.button_code(),
+                        state: event.state(),
+                        serial: SERIAL_COUNTER.next_serial(),
+                        time: event.time() as u32,
+                    };
+                    pointer.button(state, &event);
+                }
+            }
+            _ => {}
+        }
+    }).map_err(|_e| anyhow::anyhow!("Failed to insert input source"))?;
+
+    info!("Input devices registered and focused on Libinput");
 
 
     // 6. Run Loop
