@@ -342,13 +342,26 @@ fn main() -> anyhow::Result<()> {
         let client_data = FloraClientData {
             compositor_state: CompositorClientState::default(),
         };
-        let _ = state.display_handle.insert_client(client_stream, Arc::new(client_data));
-        info!("New client connected!");
+        if let Err(e) = state.display_handle.insert_client(client_stream, Arc::new(client_data)) {
+            warn!("Failed to insert client: {:?}", e);
+        } else {
+            info!("New client connected to Wayland socket!");
+        }
     }).map_err(|_e| anyhow::anyhow!("Failed to insert socket source"))?;
 
-    // 5. Initialize Udev Backend (to detect displays in VM)
-    // Use "seat0" as it is the standard on Arch Linux
-    let udev = UdevBackend::new("seat0")?;
+    // 5. Setup Display Dispatching - CRITICAL: Clients won't work without this
+    handle.insert_source(
+        smithay::reexports::calloop::generic::Generic::new(display.backend().poll_fd(), Interest::READ, Mode::Level),
+        move |_, _, state| {
+            /* info!("Wayland: Dispatching clients..."); */
+            unsafe {
+                let mut dh = state.display_handle.clone();
+                let _ = dh.dispatch_clients(state);
+                let _ = dh.flush_clients();
+            }
+            Ok(PostAction::Continue)
+        },
+    ).map_err(|_e| anyhow::anyhow!("Failed to insert display source"))?;
     
     // Scan for existing devices since Added events only trigger for new hotplugged devices
     for (_device_id, path) in udev.device_list() {
@@ -372,16 +385,7 @@ fn main() -> anyhow::Result<()> {
         }
     }).map_err(|_e| anyhow::anyhow!("Failed to insert udev source"))?;
 
-    handle.insert_source(
-        smithay::reexports::calloop::generic::Generic::new(display, Interest::READ, Mode::Level),
-        |_, display, state| {
-            unsafe {
-                let result = display.get_mut().dispatch_clients(state);
-                let _ = display.get_mut().flush_clients();
-                result.map(|_| PostAction::Continue)
-            }
-        },
-    ).map_err(|_e| anyhow::anyhow!("Failed to insert display source"))?;
+    let udev = UdevBackend::new("seat0")?;
     
 
 
@@ -665,11 +669,10 @@ fn main() -> anyhow::Result<()> {
             input_initialized = true;
             info!("Input initialization fully finished.");
 
-            // Auto-spawn foot for testing (verbose mode)
-            info!("Flora: Spawning foot terminal (verbose) on socket: {:?}", state.socket_name);
+            // Auto-spawn foot for testing
+            info!("Flora: Spawning foot terminal on socket: {:?}", state.socket_name);
             use std::process::Command;
             match Command::new("foot")
-                .arg("-v")
                 .env("WAYLAND_DISPLAY", &state.socket_name)
                 .env("XDG_RUNTIME_DIR", "/run/user/1000")
                 .spawn() {
