@@ -326,7 +326,7 @@ fn main() -> anyhow::Result<()> {
     let handle = event_loop.handle();
     
     // 2. Setup Wayland Display
-    let display = Display::new()?;
+    let mut display = Display::new()?;
     let dh = display.handle();
     
     // 3. Initialize State
