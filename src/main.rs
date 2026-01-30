@@ -230,7 +230,7 @@ impl CompositorHandler for FloraState {
 
     // Callback when a client commits a new surface buffer
     fn commit(&mut self, surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface) {
-        // info!("Compositor: Commit received for surface {:?}", surface);
+        info!("Compositor: Commit received for surface {:?}", surface);
         // Register the buffer with Smithay's renderer infrastructure
         on_commit_buffer_handler::<Self>(surface);
     }
@@ -665,12 +665,13 @@ fn main() -> anyhow::Result<()> {
             input_initialized = true;
             info!("Input initialization fully finished.");
 
-            // Auto-spawn foot for testing
-            info!("Flora: Spawning foot terminal on socket: {:?}", state.socket_name);
+            // Auto-spawn foot for testing (verbose mode)
+            info!("Flora: Spawning foot terminal (verbose) on socket: {:?}", state.socket_name);
             use std::process::Command;
             match Command::new("foot")
+                .arg("-v")
                 .env("WAYLAND_DISPLAY", &state.socket_name)
-                .env("XDG_RUNTIME_DIR", "/run/user/1000") // Ensure runtime dir is set
+                .env("XDG_RUNTIME_DIR", "/run/user/1000")
                 .spawn() {
                 Ok(_) => info!("Flora: foot spawned successfully."),
                 Err(e) => warn!("Flora: Failed to spawn foot: {:?}", e),
