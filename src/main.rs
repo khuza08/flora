@@ -105,7 +105,8 @@ impl FloraState {
         let shm_state = ShmState::new::<Self>(dh, vec![]);
         let data_device_state = DataDeviceState::new::<Self>(dh);
         let mut seat_state = SeatState::new();
-        let seat = seat_state.new_seat("seat0");
+        // Use new_wl_seat to register wl_seat as a global for clients to bind
+        let seat = seat_state.new_wl_seat(dh, "seat0");
 
         Self {
             display_handle: dh.clone(),
