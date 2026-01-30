@@ -374,7 +374,20 @@ fn main() -> anyhow::Result<()> {
         }
     }).map_err(|_e| anyhow::anyhow!("Failed to insert udev source"))?;
 
-    // 6. Run Loop
+    // 6. Setup Display Event Source - Wake up event loop when clients send data
+    use smithay::reexports::calloop::generic::Generic;
+    use std::os::unix::io::AsRawFd;
+    
+    let display_fd = display.backend().poll_fd().as_raw_fd();
+    let generic_display = Generic::new(display_fd, Interest::READ, Mode::Level);
+    
+    handle.insert_source(generic_display, |_event, _metadata, _state| {
+        // Don't dispatch here - just wake up the event loop
+        // The manual dispatch_clients() in main loop will handle it
+        Ok(PostAction::Continue)
+    }).map_err(|_e| anyhow::anyhow!("Failed to insert display event source"))?;
+
+    // 7. Run Loop
     info!("Flora Loop started. Initializing graphics first...");
     let mut input_initialized = false;
 
