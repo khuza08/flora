@@ -381,6 +381,12 @@ fn main() -> anyhow::Result<()> {
                
                // Collect render elements from all toplevel surfaces
                let mut elements: Vec<WaylandSurfaceRenderElement<GlowRenderer>> = Vec::new();
+               
+               // Debug: log number of toplevels
+               if !state.toplevels.is_empty() {
+                   info!("Rendering {} toplevels", state.toplevels.len());
+               }
+               
                for toplevel in &state.toplevels {
                    let surface = toplevel.wl_surface();
                    let location: Point<i32, Physical> = (100, 100).into();
@@ -393,7 +399,12 @@ fn main() -> anyhow::Result<()> {
                            1.0, // alpha
                            Kind::Unspecified,
                        );
+                   info!("Surface generated {} render elements", surface_elements.len());
                    elements.extend(surface_elements);
+               }
+               
+               if !elements.is_empty() {
+                   info!("Total render elements: {}", elements.len());
                }
                
                // Use DrmCompositor to render a frame with surface elements
