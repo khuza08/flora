@@ -7,7 +7,9 @@ use smithay::{
         egl::{EGLDisplay, EGLContext},
         renderer::{
             glow::GlowRenderer,
-            ImportDma,
+            ImportDma, ImportAll,
+            element::surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
+            element::Kind,
         },
     },
     output::OutputModeSource,
@@ -17,7 +19,7 @@ use smithay::{
         drm::control::{connector, Device as _},
         input as smithay_input,
     },
-    utils::{DeviceFd, Transform, Size, Scale},
+    utils::{DeviceFd, Transform, Size, Scale, Physical, Point},
     wayland::{
         compositor::{CompositorState, CompositorHandler, CompositorClientState},
         socket::ListeningSocketSource,
@@ -373,10 +375,27 @@ fn main() -> anyhow::Result<()> {
                // Render a macOS-like gray background
                let color = [0.2, 0.2, 0.2, 1.0]; // #333333ish
                
-                // Use DrmCompositor to render a frame
-                let _ = compositor.render_frame::<GlowRenderer, smithay::backend::renderer::gles::element::TextureShaderElement>(
+               // Collect render elements from all toplevel surfaces
+               let mut elements: Vec<WaylandSurfaceRenderElement<GlowRenderer>> = Vec::new();
+               for toplevel in &state.toplevels {
+                   let surface = toplevel.wl_surface();
+                   let location: Point<i32, Physical> = (100, 100).into();
+                   let surface_elements: Vec<WaylandSurfaceRenderElement<GlowRenderer>> = 
+                       render_elements_from_surface_tree(
+                           renderer,
+                           surface,
+                           location,
+                           1.0, // scale
+                           1.0, // alpha
+                           Kind::Unspecified,
+                       );
+                   elements.extend(surface_elements);
+               }
+               
+                // Use DrmCompositor to render a frame with surface elements
+                let _ = compositor.render_frame::<GlowRenderer, WaylandSurfaceRenderElement<GlowRenderer>>(
                     renderer,
-                    &[],
+                    &elements,
                     color,
                     smithay::backend::drm::compositor::FrameFlags::empty(),
                 );
