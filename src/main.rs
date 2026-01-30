@@ -230,6 +230,7 @@ impl CompositorHandler for FloraState {
 
     // Callback when a client commits a new surface buffer
     fn commit(&mut self, surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface) {
+        // info!("Compositor: Commit received for surface {:?}", surface);
         // Register the buffer with Smithay's renderer infrastructure
         on_commit_buffer_handler::<Self>(surface);
     }
@@ -603,6 +604,14 @@ fn main() -> anyhow::Result<()> {
                             if added_nodes.contains(&real_path) {
                                 continue;
                             }
+                            
+                            // Temporary skip for event3 which takes 10 seconds in this VM
+                            let real_path_str = real_path.to_string_lossy();
+                            if real_path_str.contains("event3") {
+                                info!("Input: Skipping SLOW device {:?} (Target: {:?})", path_str, real_path);
+                                continue;
+                            }
+
                             info!("Input: Registering device {:?} (Target: {:?})", path_str, real_path);
                             libinput_context.path_add_device(&path_str);
                             added_nodes.insert(real_path);
