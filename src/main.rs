@@ -369,12 +369,15 @@ fn main() -> anyhow::Result<()> {
     ).map_err(|_e| anyhow::anyhow!("Failed to insert display source"))?;
 
     // 6. Initialize Input
+    info!("Input Setup: Adding keyboard...");
     state.seat.add_keyboard(Default::default(), 200, 25)
         .map_err(|_| anyhow::anyhow!("Failed to add keyboard to seat"))?;
+    
+    info!("Input Setup: Adding pointer...");
     state.seat.add_pointer();
 
     // Create Libinput backend
-    info!("Initializing Libinput context...");
+    info!("Input Setup: Initializing Libinput context...");
     let mut libinput_context = smithay::reexports::input::Libinput::new_with_udev(FloraLibinputInterface);
     
     info!("Assigning 'seat0' to Libinput...");
