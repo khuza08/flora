@@ -715,8 +715,9 @@ fn main() -> anyhow::Result<()> {
         }
 
         // First: Accept new connections and process input events
+        // Use ZERO timeout so dispatch returns immediately - we control timing with sleep
         info!("Flora: BEFORE event_loop.dispatch()");
-        match event_loop.dispatch(Duration::from_millis(16), &mut state) {
+        match event_loop.dispatch(Duration::ZERO, &mut state) {
             Ok(_) => {
                 info!("Flora: AFTER event_loop.dispatch() - OK");
             },
@@ -725,6 +726,9 @@ fn main() -> anyhow::Result<()> {
                 break;
             }
         }
+        
+        // Sleep for frame pacing since we're using ZERO timeout dispatch
+        std::thread::sleep(Duration::from_millis(16));
         
         // Second: Dispatch Wayland protocol messages from connected clients
         match display.try_borrow_mut() {
