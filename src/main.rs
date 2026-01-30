@@ -24,10 +24,17 @@ use smithay::{
     wayland::{
         compositor::{CompositorState, CompositorHandler, CompositorClientState, with_surface_tree_downward, TraversalAction, SurfaceAttributes},
         socket::ListeningSocketSource,
-        shell::xdg::{XdgShellState, XdgShellHandler, ToplevelSurface, PopupSurface, PositionerState},
+        shell::xdg::{
+            XdgShellState, XdgShellHandler, ToplevelSurface, PopupSurface, PositionerState,
+            decoration::{XdgDecorationState, XdgDecorationHandler},
+        },
         shm::{ShmState, ShmHandler},
         buffer::BufferHandler,
-        selection::{SelectionHandler, data_device::{DataDeviceState, DataDeviceHandler, ClientDndGrabHandler, ServerDndGrabHandler}},
+        selection::{
+            SelectionHandler,
+            data_device::{DataDeviceState, DataDeviceHandler, ClientDndGrabHandler, ServerDndGrabHandler},
+            primary_selection::{PrimarySelectionState, PrimarySelectionHandler},
+        },
         output::OutputHandler,
     },
     output::{Output, PhysicalProperties, Subpixel, Mode as OutputMode},
@@ -47,6 +54,8 @@ pub struct FloraState {
     pub xdg_shell_state: XdgShellState,
     pub shm_state: ShmState,
     pub data_device_state: DataDeviceState,
+    pub primary_selection_state: PrimarySelectionState,
+    pub xdg_decoration_state: XdgDecorationState,
     pub seat_state: SeatState<Self>,
     pub seat: Seat<Self>,
     pub output: Option<Output>,
@@ -101,6 +110,46 @@ impl OutputHandler for FloraState {}
 use smithay::delegate_output;
 delegate_output!(FloraState);
 
+// Primary selection (copy with middle mouse button) support
+impl PrimarySelectionHandler for FloraState {
+    fn primary_selection_state(&self) -> &PrimarySelectionState {
+        &self.primary_selection_state
+    }
+}
+
+use smithay::delegate_primary_selection;
+delegate_primary_selection!(FloraState);
+
+// XDG decoration (server-side window decorations) support
+impl XdgDecorationHandler for FloraState {
+    fn new_decoration(&mut self, toplevel: ToplevelSurface) {
+        use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
+        // Prefer client-side decorations by default
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode = Some(Mode::ClientSide);
+        });
+        toplevel.send_configure();
+    }
+
+    fn request_mode(&mut self, toplevel: ToplevelSurface, mode: smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode) {
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode = Some(mode);
+        });
+        toplevel.send_configure();
+    }
+
+    fn unset_mode(&mut self, toplevel: ToplevelSurface) {
+        use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode = Some(Mode::ClientSide);
+        });
+        toplevel.send_configure();
+    }
+}
+
+use smithay::delegate_xdg_decoration;
+delegate_xdg_decoration!(FloraState);
+
 pub struct FloraClientData {
     pub compositor_state: CompositorClientState,
 }
@@ -113,6 +162,8 @@ impl FloraState {
         let xdg_shell_state = XdgShellState::new::<Self>(dh);
         let shm_state = ShmState::new::<Self>(dh, vec![]);
         let data_device_state = DataDeviceState::new::<Self>(dh);
+        let primary_selection_state = PrimarySelectionState::new::<Self>(dh);
+        let xdg_decoration_state = XdgDecorationState::new::<Self>(dh);
         let mut seat_state = SeatState::new();
         // Use new_wl_seat to register wl_seat as a global for clients to bind
         let seat = seat_state.new_wl_seat(dh, "seat0");
@@ -143,6 +194,8 @@ impl FloraState {
             xdg_shell_state,
             shm_state,
             data_device_state,
+            primary_selection_state,
+            xdg_decoration_state,
             seat_state,
             seat,
             output: Some(output),
