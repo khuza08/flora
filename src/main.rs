@@ -354,6 +354,7 @@ fn main() -> anyhow::Result<()> {
         } else {
             info!("New client connected to Wayland socket!");
         }
+        info!("Socket callback COMPLETED - returning from callback");
     }).map_err(|_e| anyhow::anyhow!("Failed to insert socket source"))?;
 
     // 5. Initialize Udev Backend (to detect displays in VM)
