@@ -72,6 +72,7 @@ pub struct FloraState {
     // Toplevel surfaces for rendering
     pub toplevels: Vec<ToplevelSurface>,
     pub pointer_location: Point<f64, Physical>,
+    pub input_context: Option<smithay::reexports::input::Libinput>,
 }
 
 use smithay::delegate_seat;
@@ -210,6 +211,7 @@ impl FloraState {
             compositor: None,
             toplevels: Vec::new(),
             pointer_location: Point::from((0.0, 0.0)),
+            input_context: None,
         }
     }
 }
@@ -288,12 +290,22 @@ struct FloraLibinputInterface;
 
 impl smithay_input::LibinputInterface for FloraLibinputInterface {
     fn open_restricted(&mut self, path: &std::path::Path, _flags: i32) -> Result<std::os::unix::io::OwnedFd, i32> {
-        OpenOptions::new()
+        info!("Libinput: Opening {:?}", path);
+        let result = OpenOptions::new()
             .read(true)
             .write(true)
-            .open(path)
-            .map(|f| f.into())
-            .map_err(|err| err.raw_os_error().unwrap_or(1))
+            .open(path);
+        
+        match result {
+            Ok(file) => {
+                info!("Libinput: Successfully opened {:?}", path);
+                Ok(file.into())
+            }
+            Err(err) => {
+                warn!("Libinput: Failed to open {:?}: {:?}", path, err);
+                Err(err.raw_os_error().unwrap_or(1))
+            }
+        }
     }
 
     fn close_restricted(&mut self, fd: std::os::unix::io::OwnedFd) {
@@ -359,95 +371,19 @@ fn main() -> anyhow::Result<()> {
         smithay::reexports::calloop::generic::Generic::new(display, Interest::READ, Mode::Level),
         |_, display, state| {
             unsafe {
-                // Process incoming client requests
                 let result = display.get_mut().dispatch_clients(state);
-                // CRITICAL: Flush responses back to clients
                 let _ = display.get_mut().flush_clients();
                 result.map(|_| PostAction::Continue)
             }
         },
     ).map_err(|_e| anyhow::anyhow!("Failed to insert display source"))?;
-
-    // 6. Initialize Input
-    info!("Input Setup: Adding keyboard...");
-    state.seat.add_keyboard(Default::default(), 200, 25)
-        .map_err(|_| anyhow::anyhow!("Failed to add keyboard to seat"))?;
     
-    info!("Input Setup: Adding pointer...");
-    state.seat.add_pointer();
-
-    // Create Libinput backend
-    info!("Input Setup: Initializing Libinput context...");
-    let mut libinput_context = smithay::reexports::input::Libinput::new_with_udev(FloraLibinputInterface);
-    
-    info!("Assigning 'seat0' to Libinput...");
-    if let Err(err) = libinput_context.udev_assign_seat("seat0") {
-        warn!("Failed to assign seat0 to Libinput: {:?}", err);
-    }
-    
-    let libinput_backend = LibinputInputBackend::new(libinput_context);
-    info!("Libinput backend created.");
-
-    handle.insert_source(libinput_backend, |event, _, state| {
-        match event {
-            InputEvent::DeviceAdded { device } => {
-                info!("Input device added: {:?}", device);
-            }
-            InputEvent::DeviceRemoved { device } => {
-                info!("Input device removed: {:?}", device);
-            }
-            InputEvent::Keyboard { event } => {
-                let keycode = event.key_code();
-                info!("Keyboard event: keycode={:?}, state={:?}", keycode, event.state());
-                let key_state = event.state();
-                let serial = SERIAL_COUNTER.next_serial();
-                let time = event.time() as u32;
-                
-                if let Some(keyboard) = state.seat.get_keyboard() {
-                    // Forward to client. Filter can be used for global shortcuts later.
-                    keyboard.input::<(), _>(state, keycode, key_state, serial, time, |_, _, _| {
-                        FilterResult::Forward
-                    });
-                }
-            }
-            InputEvent::PointerMotion { event } => {
-                let delta = event.delta();
-                state.pointer_location += delta.to_physical(1.0);
-                // Clamp pointer to screen (hardcoded 1280x800 for now)
-                state.pointer_location.x = state.pointer_location.x.max(0.0).min(1280.0);
-                state.pointer_location.y = state.pointer_location.y.max(0.0).min(800.0);
-                
-                if let Some(pointer) = state.seat.get_pointer() {
-                    use smithay::input::pointer::MotionEvent;
-                    let event = MotionEvent {
-                        location: state.pointer_location.to_logical(1.0),
-                        serial: SERIAL_COUNTER.next_serial(),
-                        time: event.time() as u32,
-                    };
-                    pointer.motion(state, None, &event);
-                }
-            }
-            InputEvent::PointerButton { event } => {
-                if let Some(pointer) = state.seat.get_pointer() {
-                    use smithay::input::pointer::ButtonEvent;
-                    let event = ButtonEvent {
-                        button: event.button_code(),
-                        state: event.state(),
-                        serial: SERIAL_COUNTER.next_serial(),
-                        time: event.time() as u32,
-                    };
-                    pointer.button(state, &event);
-                }
-            }
-            _ => {}
-        }
-    }).map_err(|_e| anyhow::anyhow!("Failed to insert input source"))?;
-
-    info!("Input devices registered and focused on Libinput");
 
 
     // 6. Run Loop
-    info!("Flora Loop started. Waiting for graphics hardware...");
+    info!("Flora Loop started. Initializing graphics first...");
+    let mut input_initialized = false;
+
     while !state.should_stop {
         if state.renderer.is_none() && !state.drm_devices.is_empty() {
             let device_path = state.drm_devices.pop().unwrap();
@@ -631,6 +567,65 @@ fn main() -> anyhow::Result<()> {
                     );
                 }
             }
+        }
+
+        if !input_initialized && state.renderer.is_some() {
+            info!("Graphics ready, initializing input...");
+            
+            // 6. Initialize Input
+            state.seat.add_keyboard(Default::default(), 200, 25).ok();
+            state.seat.add_pointer();
+
+            info!("Input: Initializing Libinput context...");
+            let mut libinput_context = smithay::reexports::input::Libinput::new_with_udev(FloraLibinputInterface);
+            
+            info!("Input: Assigning 'seat0' to Libinput...");
+            if let Err(err) = libinput_context.udev_assign_seat("seat0") {
+                warn!("Input: Failed to assign seat0: {:?}", err);
+            }
+            
+            let libinput_backend = LibinputInputBackend::new(libinput_context);
+            handle.insert_source(libinput_backend, |event, _, state| {
+                match event {
+                    InputEvent::Keyboard { event } => {
+                        let keycode = event.key_code();
+                        let key_state = event.state();
+                        let serial = SERIAL_COUNTER.next_serial();
+                        let time = event.time() as u32;
+                        if let Some(keyboard) = state.seat.get_keyboard() {
+                            keyboard.input::<(), _>(state, keycode, key_state, serial, time, |_, _, _| FilterResult::Forward);
+                        }
+                    }
+                    InputEvent::PointerMotion { event } => {
+                        state.pointer_location += event.delta().to_physical(1.0);
+                        state.pointer_location.x = state.pointer_location.x.max(0.0).min(1280.0);
+                        state.pointer_location.y = state.pointer_location.y.max(0.0).min(800.0);
+                        if let Some(pointer) = state.seat.get_pointer() {
+                            use smithay::input::pointer::MotionEvent;
+                            pointer.motion(state, None, &MotionEvent {
+                                location: state.pointer_location.to_logical(1.0),
+                                serial: SERIAL_COUNTER.next_serial(),
+                                time: event.time() as u32,
+                            });
+                        }
+                    }
+                    InputEvent::PointerButton { event } => {
+                        if let Some(pointer) = state.seat.get_pointer() {
+                            use smithay::input::pointer::ButtonEvent;
+                            pointer.button(state, &ButtonEvent {
+                                button: event.button_code(),
+                                state: event.state(),
+                                serial: SERIAL_COUNTER.next_serial(),
+                                time: event.time() as u32,
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+            }).ok();
+            
+            input_initialized = true;
+            info!("Input initialization attempt finished.");
         }
 
         event_loop.dispatch(Duration::from_millis(16), &mut state)?;
