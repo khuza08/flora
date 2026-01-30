@@ -325,9 +325,12 @@ fn main() -> anyhow::Result<()> {
     let mut event_loop: EventLoop<FloraState> = EventLoop::try_new()?;
     let handle = event_loop.handle();
     
-    // 2. Setup Wayland Display
-    let mut display = Display::new()?;
-    let dh = display.handle();
+    // 2. Setup Wayland Display (wrapped for shared mutable access)
+    use std::rc::Rc;
+    use std::cell::RefCell;
+    
+    let display = Rc::new(RefCell::new(Display::new()?));
+    let dh = display.borrow().handle();
     
     // 3. Initialize State
     let mut state = FloraState::new(&dh);
@@ -374,17 +377,22 @@ fn main() -> anyhow::Result<()> {
         }
     }).map_err(|_e| anyhow::anyhow!("Failed to insert udev source"))?;
 
-    // 6. Setup Display Event Source - Wake up event loop when clients send data
+    // 6. Setup Display Event Source - Monitor and dispatch when clients send data
     use smithay::reexports::calloop::generic::Generic;
-    use std::os::unix::io::AsFd;
     
-    // Get display backend file descriptor for monitoring
-    let poll_fd =  display.backend().poll_fd();
-    let generic_display = Generic::new(poll_fd, Interest::READ, Mode::Level);
+    let display_for_source = display.clone();
     
-    handle.insert_source(generic_display, |_event, _metadata, _state| {
-        // Don't dispatch here - just wake up the event loop
-        // The manual dispatch_clients() in main loop will handle it
+    // Create owned FD from poll_fd to avoid borrow lifetime issues
+    use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd};
+    let raw_fd = display.borrow().backend().poll_fd().as_raw_fd();
+    let owned_fd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
+    let generic_display = Generic::new(owned_fd, Interest::READ, Mode::Level);
+    
+    handle.insert_source(generic_display, move |_event, _metadata, state| {
+        // Dispatch clients when data arrives
+        let mut disp = display_for_source.borrow_mut();
+        let _ = disp.dispatch_clients(state);
+        let _ = disp.flush_clients();
         Ok(PostAction::Continue)
     }).map_err(|_e| anyhow::anyhow!("Failed to insert display event source"))?;
 
@@ -680,10 +688,6 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
-        // CRITICAL: Dispatch Wayland clients BEFORE event loop to process client requests
-        let _ = display.dispatch_clients(&mut state);
-        let _ = display.flush_clients();
-        
         event_loop.dispatch(Duration::from_millis(16), &mut state)?;
     }
 
