@@ -15,14 +15,14 @@ Flora is in early development but already supports:
 
 Flora supports two backends for different workflows:
 
-### 🖥️ Development Mode (Winit/Nested)
+### Development Mode (Winit/Nested)
 Runs as a window inside your current Wayland or X11 compositor (e.g., Hyprland, GNOME). **No root required.**
 
 ```bash
 cargo run
 ```
 
-### 🎮 Production Mode (DRM/Native)
+###  Production Mode (DRM/Native)
 Runs natively from a TTY. Requires switching to a console (e.g., `Ctrl+Alt+F3`) and root privileges for DRM/input access.
 
 ```bash
