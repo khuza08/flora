@@ -411,6 +411,10 @@ enum FloraInputEvent {
         delta: Point<f64, Physical>,
         time: u32,
     },
+    PointerMotionAbsolute {
+        location: Point<f64, Physical>,
+        time: u32,
+    },
     PointerButton {
         button: u32,
         pressed: bool,
@@ -647,6 +651,41 @@ fn main() -> anyhow::Result<()> {
                             }
                             state.needs_redraw = true;
                         }
+                        FloraInputEvent::PointerMotionAbsolute { location, time } => {
+                            // Scale normalized coordinates to our screen size
+                            state.pointer_location.x = location.x * 1280.0;
+                            state.pointer_location.y = location.y * 800.0;
+                            
+                            if let Some((idx, offset)) = state.grab_state {
+                                if let Some(window) = state.windows.get_mut(idx) {
+                                    window.location = Point::<i32, Physical>::from((
+                                        (state.pointer_location.x - offset.x).round() as i32,
+                                        (state.pointer_location.y - offset.y).round() as i32
+                                    ));
+                                }
+                            }
+
+                            let serial = SERIAL_COUNTER.next_serial();
+                            if let Some(pointer) = state.seat.get_pointer() {
+                                let under = state.windows.iter().rev().find_map(|w| {
+                                    let px = state.pointer_location.x.round() as i32;
+                                    let py = state.pointer_location.y.round() as i32;
+                                    let local_x = px - w.location.x;
+                                    let local_y = py - w.location.y;
+                                    if local_x >= 0 && local_x <= 800 && local_y >= 0 && local_y <= 600 {
+                                        Some((w.toplevel.wl_surface().clone(), Point::<f64, smithay::utils::Logical>::from((local_x as f64, local_y as f64))))
+                                    } else {
+                                        None
+                                    }
+                                });
+
+                                pointer.motion(state, under, &smithay::input::pointer::MotionEvent {
+                                    location: state.pointer_location.to_logical(1.0),
+                                    serial, time,
+                                });
+                            }
+                            state.needs_redraw = true;
+                        }
                         FloraInputEvent::PointerButton { button, pressed, time } => {
                             let serial = SERIAL_COUNTER.next_serial();
                             let state_enum = if pressed { smithay::backend::input::ButtonState::Pressed } else { smithay::backend::input::ButtonState::Released };
@@ -726,8 +765,10 @@ fn main() -> anyhow::Result<()> {
                             LibinputEvent::Pointer(ptr) => {
                                 match ptr {
                                     PointerEvent::Motion(m) => {
-                                        info!("Input Thread: Raw Motion: dx={} dy={}", m.dx(), m.dy());
                                         let _ = input_sender.send(FloraInputEvent::PointerMotion { delta: (m.dx(), m.dy()).into(), time: m.time() as u32 });
+                                    }
+                                    PointerEvent::MotionAbsolute(m) => {
+                                        let _ = input_sender.send(FloraInputEvent::PointerMotionAbsolute { location: (m.absolute_x(), m.absolute_y()).into(), time: m.time() as u32 });
                                     }
                                     PointerEvent::Button(b) => {
                                         info!("Input Thread: Raw Button: button={} state={:?}", b.button(), b.button_state());
@@ -763,7 +804,10 @@ fn main() -> anyhow::Result<()> {
                     
                     // Render the frame
                     if let Err(e) = compositor.render_frame::<GlowRenderer, WaylandSurfaceRenderElement<GlowRenderer>>(renderer, &elements, color, smithay::backend::drm::compositor::FrameFlags::empty()) {
-                        error!("Rendering: render_frame failed: {:?}", e);
+                        // Suppress EmptyFrame errors which are expected when no buffers are ready
+                        if format!("{:?}", e) != "EmptyFrame" {
+                            error!("Rendering: render_frame failed: {:?}", e);
+                        }
                     }
                     
                     // IMPORTANT: Process frame callbacks BEFORE commit_frame or right after to ensure clients know we finished a frame
