@@ -3,8 +3,21 @@ name = "flora"
 version = "26.0.1"
 edition = "2021"
 
+[features]
+default = ["winit"]  # Dev-friendly: enables nested compositor mode
+winit = ["smithay/backend_winit"]  # Optional: enables running inside another compositor
+
 [dependencies]
-smithay = { version = "0.7.0", default-features = false, features = ["backend_drm", "backend_udev", "backend_libinput", "backend_gbm", "desktop", "renderer_glow", "wayland_frontend", "x11rb", "backend_winit"] }
+smithay = { version = "0.7.0", default-features = false, features = [
+    "backend_drm", 
+    "backend_udev", 
+    "backend_libinput", 
+    "backend_gbm", 
+    "desktop", 
+    "renderer_glow", 
+    "wayland_frontend", 
+    "x11rb"
+] }
 wayland-server = "0.31"
 calloop = "0.12"
 tracing = "0.1"
@@ -18,8 +31,3 @@ egui = "0.31"
 wayland-client = "0.31"
 tempfile = "3"
 rstest = "0.18"
-
-[features]
-default = []
-udev = ["smithay/backend_udev"]
-backend_drm = ["smithay/backend_drm"]

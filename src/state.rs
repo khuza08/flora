@@ -16,9 +16,11 @@ use smithay::{
         drm::exporter::gbm::GbmFramebufferExporter,
         egl::EGLDisplay,
         renderer::glow::GlowRenderer,
-        winit::WinitGraphicsBackend,
     },
 };
+
+#[cfg(feature = "winit")]
+use smithay::backend::winit::WinitGraphicsBackend;
 
 use smithay_egui::EguiState;
 
@@ -51,6 +53,7 @@ pub enum BackendData {
         compositor: DrmCompositor<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>,
         device: DrmDevice,
     },
+    #[cfg(feature = "winit")]
     Winit {
         backend: WinitGraphicsBackend<GlowRenderer>,
         damage_tracker: smithay::backend::renderer::damage::OutputDamageTracker,

@@ -10,7 +10,6 @@ use smithay::{
             element::{Kind, surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement}, solid::SolidColorRenderElement, texture::TextureRenderElement},
         },
         drm::DrmEvent,
-        winit::WinitEvent,
     },
     reexports::{
         calloop::{EventLoop, Interest, Mode, PostAction, generic::Generic, channel::Event},
@@ -30,7 +29,14 @@ use anyhow::Result;
 
 use crate::state::{FloraState, FloraClientData, CompositorClientState, TITLE_BAR_HEIGHT, BackendData};
 use crate::input::{FloraInputEvent, spawn_input_thread};
-use crate::backend::{drm::init_drm_graphics, winit::init_winit_graphics};
+use crate::backend::drm::init_drm_graphics;
+
+#[cfg(feature = "winit")]
+use smithay::backend::winit::{WinitEvent, WinitInput};
+#[cfg(feature = "winit")]
+use smithay::backend::input::{Event as InputEventTrait, InputEvent, KeyboardKeyEvent, PointerMotionEvent, PointerButtonEvent, KeyState, ButtonState};
+#[cfg(feature = "winit")]
+use crate::backend::winit::init_winit_graphics;
 
 smithay::backend::renderer::element::render_elements! {
     pub CustomRenderElement<=GlowRenderer>;
@@ -112,9 +118,14 @@ fn main() -> Result<()> {
     info!("Flora: Entering main event loop...");
     
     // Check if we should use Winit (nested) or DRM (native)
+    #[cfg(feature = "winit")]
     let use_winit = std::env::var("WAYLAND_DISPLAY").is_ok() || std::env::var("DISPLAY").is_ok();
+    #[cfg(not(feature = "winit"))]
+    let use_winit = false;
     
     let mut tty_file: Option<std::fs::File> = None;
+    
+    #[cfg(feature = "winit")]
     if use_winit {
         match init_winit_graphics() {
             Ok((backend, winit_event_loop, output)) => {
@@ -140,14 +151,32 @@ fn main() -> Result<()> {
                             }
                             state.needs_redraw = true;
                         }
-                        WinitEvent::Input(_input_event) => {
-                            // Forward input to handle_input_event
-                            // Note: Winit input needs conversion to FloraInputEvent or handled directly
-                            // Simplified for now: just trigger redraw on input
+                        WinitEvent::Input(input_event) => {
+                            let scale = get_output_scale(state);
+                            match input_event {
+                                InputEvent::Keyboard { event } => {
+                                    handle_input_event(state, FloraInputEvent::Keyboard { 
+                                        keycode: KeyboardKeyEvent::<WinitInput>::key_code(&event).into(), 
+                                        pressed: KeyboardKeyEvent::<WinitInput>::state(&event) == KeyState::Pressed, 
+                                        time: InputEventTrait::<WinitInput>::time(&event) as u32 
+                                    });
+                                }
+                                InputEvent::PointerMotion { event } => {
+                                    handle_input_event(state, FloraInputEvent::PointerMotion { 
+                                        delta: PointerMotionEvent::<WinitInput>::delta(&event).to_physical(scale), 
+                                        time: InputEventTrait::<WinitInput>::time(&event) as u32 
+                                    });
+                                }
+                                InputEvent::PointerButton { event } => {
+                                    handle_input_event(state, FloraInputEvent::PointerButton { 
+                                        button: PointerButtonEvent::<WinitInput>::button_code(&event), 
+                                        pressed: PointerButtonEvent::<WinitInput>::state(&event) == ButtonState::Pressed, 
+                                        time: InputEventTrait::<WinitInput>::time(&event) as u32 
+                                    });
+                                }
+                                _ => {}
+                            }
                             state.needs_redraw = true;
-                            
-                            // Map Winit events to FloraInputEvent if possible
-                            // For now, let's just use the winit source directly to update state
                         }
                         WinitEvent::Redraw => {
                             state.needs_redraw = true;
@@ -155,7 +184,24 @@ fn main() -> Result<()> {
                         WinitEvent::CloseRequested => {
                             state.should_stop = true;
                         }
-                        _ => {}
+                        WinitEvent::Focus(gained) => {
+                            // When window gains focus, release all pressed keys to clear
+                            // any modifier state inherited from parent compositor
+                            if gained {
+                                if let Some(keyboard) = state.seat.get_keyboard() {
+                                    for keycode in keyboard.pressed_keys() {
+                                        keyboard.input::<(), _>(
+                                            state,
+                                            keycode,
+                                            smithay::backend::input::KeyState::Released,
+                                            SERIAL_COUNTER.next_serial(),
+                                            0,
+                                            |_, _, _| FilterResult::Forward,
+                                        );
+                                    }
+                                }
+                            }
+                        }
                     }
                 }).expect("Failed to insert Winit event loop");
             }
@@ -163,7 +209,9 @@ fn main() -> Result<()> {
                 error!("Failed to initialize Winit backend: {}", e);
             }
         }
-    } else {
+    }
+    
+    if !use_winit {
         // DRM setup
         tty_file = setup_tty_graphics()?;
         let udev = UdevBackend::new("seat0")?;
@@ -180,6 +228,7 @@ fn main() -> Result<()> {
             }
         }).map_err(|_| anyhow::anyhow!("Failed to insert udev source"))?;
     }
+
 
     while !state.should_stop {
         // A. DRM Graphics Initialization (if using DRM and not yet initialized)
@@ -274,7 +323,8 @@ fn handle_input_event(state: &mut FloraState, event: FloraInputEvent) {
             let serial = SERIAL_COUNTER.next_serial();
             let state_enum = if pressed { smithay::backend::input::KeyState::Pressed } else { smithay::backend::input::KeyState::Released };
             if let Some(keyboard) = state.seat.get_keyboard() {
-                keyboard.input::<(), _>(state, (keycode + 8).into(), state_enum, serial, time, |_, _, _| FilterResult::Forward);
+                // Smithay expects evdev keycodes and handles XKB offset internally
+                keyboard.input::<(), _>(state, keycode.into(), state_enum, serial, time, |_, _, _| FilterResult::Forward);
             }
             state.needs_redraw = true;
         }
@@ -473,6 +523,7 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<Display<FloraState>
                 .map(|m| m.size)
                 .unwrap_or((1280, 800).into())
         }
+        #[cfg(feature = "winit")]
         BackendData::Winit { backend, .. } => {
             backend.window_size()
         }
@@ -519,6 +570,7 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<Display<FloraState>
                 }
             }
         }
+        #[cfg(feature = "winit")]
         BackendData::Winit { backend, damage_tracker } => {
             let buffer_age = backend.buffer_age().unwrap_or(0);
             
