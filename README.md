@@ -5,11 +5,12 @@ A modern, macOS-inspired(Future) Wayland compositor built with [Smithay](https:/
 
 ## Current State
 Flora is in early development but already supports:
-- **Low-Latency Rendering**: Direct DRM/GBM/EGL pipeline with Glow/GLES.
-- **Responsive Input**: Optimized background input thread with proactive Wayland socket flushing.
+- **Modular Architecture**: Clean separation of concerns into `compositor`, `shell`, and `input` modules.
+- **Low-Latency Rendering**: Direct DRM/GBM/EGL pipeline with Glow/GLES and manual damage tracking.
+- **Event-Driven Input**: High-performance Libinput integration directly into the `calloop` event loop (no separate thread).
 - **Universal Pointer Support**: Handles both relative (mouse) and absolute (tablet/VM) pointer events.
-- **Window Management**: Basic XDG shell support with window tracking and grab-to-move.
-- **Clean Diagnostics**: Intelligent log suppression for non-critical setup errors.
+- **Window Management**: XDG shell support with click-to-focus and interactive title bars (via Egui).
+- **Design System**: Preliminary server-side decorations and interactive UI overlays.
 
 ## Running Flora
 
