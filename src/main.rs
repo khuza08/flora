@@ -594,51 +594,51 @@ fn gather_elements(
 
     let egui_element = egui_state.render(
         |ctx| {
-            // Global label area
-            egui::Area::new(egui::Id::new("label"))
-                .anchor(egui::Align2::LEFT_TOP, egui::vec2(10.0, 10.0))
+            egui::Area::new(egui::Id::new("flora_ui"))
+                .fixed_pos(egui::pos2(0.0, 0.0))
                 .show(ctx, |ui| {
-                    ui.label(egui::RichText::new("Flora Compositor").color(egui::Color32::WHITE).size(20.0));
-                });
-
-            // Iterate through windows and draw their title bar buttons
-            for (idx, pos, size, is_focused, bar_id) in window_data {
-                egui::Window::new(format!("window_{}", idx))
-                    .id(egui::Id::new(bar_id))
-                    .fixed_pos(egui::pos2(pos.x as f32 / scale as f32, pos.y as f32 / scale as f32))
-                    .fixed_size(egui::vec2(size.w as f32 / scale as f32, TITLE_BAR_HEIGHT as f32 / scale as f32))
-                    .title_bar(false)
-                    .frame(egui::Frame::NONE) // Transparent, background provided by Solid element
-                    .show(ctx, |ui| {
-                        ui.horizontal_centered(|ui| {
-                            let btn_radius = 6.0;
-                            let spacing = 8.0;
-                            let start_x = 10.0;
-
-                            ui.add_space(start_x);
-                            for i in 0..3 {
-                                let color = match i {
-                                    0 => egui::Color32::from_rgb(255, 95, 87),
-                                    1 => egui::Color32::from_rgb(255, 189, 46),
-                                    2 => egui::Color32::from_rgb(40, 201, 64),
-                                    _ => egui::Color32::GRAY,
-                                };
-                                
-                                let (rect, response) = ui.allocate_exact_size(
-                                    egui::vec2(btn_radius * 2.0, btn_radius * 2.0),
-                                    egui::Sense::click()
-                                );
-                                
-                                ui.painter().circle_filled(rect.center(), btn_radius, color);
-                                
-                                if response.clicked() && *is_focused && i == 0 {
-                                    pending_close = Some(*idx);
-                                }
-                                ui.add_space(spacing);
-                            }
-                        });
+                    // 1. Compositor Label (Top-left)
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
+                        ui.add_space(10.0);
+                        ui.label(egui::RichText::new("Flora Compositor").color(egui::Color32::from_gray(200)).size(14.0));
                     });
-            }
+
+                    // 2. Window Title Bar Buttons
+                    for (idx, pos, _size, _is_focused, bar_id) in window_data {
+                        let btn_radius = 6.0;
+                        let spacing = 8.0;
+                        let start_x_offset = 12.0;
+                        let center_y_offset = (TITLE_BAR_HEIGHT as f32 / scale as f32) / 2.0;
+
+                        let logical_pos = egui::pos2(pos.x as f32 / scale as f32, pos.y as f32 / scale as f32);
+
+                        for i in 0..3 {
+                            let (color, hover_color) = match i {
+                                0 => (egui::Color32::from_rgb(255, 95, 87), egui::Color32::from_rgb(255, 120, 110)), // Red
+                                1 => (egui::Color32::from_rgb(255, 189, 46), egui::Color32::from_rgb(255, 210, 100)), // Yellow
+                                2 => (egui::Color32::from_rgb(40, 201, 64), egui::Color32::from_rgb(80, 230, 100)),  // Green
+                                _ => (egui::Color32::GRAY, egui::Color32::LIGHT_GRAY),
+                            };
+                            
+                            let center = egui::pos2(
+                                logical_pos.x + start_x_offset + i as f32 * (btn_radius * 2.0 + spacing),
+                                logical_pos.y + center_y_offset
+                            );
+
+                            let interaction_id = egui::Id::new(("btn", bar_id, i));
+                            let rect = egui::Rect::from_center_size(center, egui::vec2(btn_radius * 2.2, btn_radius * 2.2));
+                            let response = ui.interact(rect, interaction_id, egui::Sense::click());
+                            
+                            let final_color = if response.hovered() { hover_color } else { color };
+                            ui.painter().circle_filled(center, btn_radius, final_color);
+
+                            if response.clicked() && i == 0 {
+                                info!("Flora: Closing window {}", idx);
+                                pending_close = Some(*idx);
+                            }
+                        }
+                    }
+                });
         },
         renderer,
         Rectangle::new((0, 0).into(), (output_size.w, output_size.h).into()),
@@ -646,9 +646,25 @@ fn gather_elements(
         scale as f32,
     );
 
-    // 2. Gather window and title bar elements
-    for window in windows {
-        // A. Title Bar Background (Lower in this window's stack)
+    // 1. Egui Overlay (Top-most in this compositor's order)
+    match egui_element {
+        Ok(egui_tex) => elements.push(CustomRenderElement::Egui(egui_tex)),
+        Err(err) => error!("Failed to render egui overlay: {:?}", err),
+    }
+
+    // 2. Gather window and title bar elements (Top-to-Bottom)
+    for window in windows.iter().rev() {
+        // B. Window Surface Tree (Drawn OVER the title bar background in each window stack)
+        let surface_location = Point::from((window.location.x, window.location.y + TITLE_BAR_HEIGHT));
+        elements.extend(render_elements_from_surface_tree::<GlowRenderer, CustomRenderElement>(
+            renderer, 
+            window.toplevel.wl_surface(), 
+            surface_location, 
+            1.0, 1.0, 
+            Kind::Unspecified
+        ));
+
+        // A. Title Bar Background (Drawn UNDER the surface)
         let surface_size = window.toplevel.current_state().size.unwrap_or((800, 600).into());
         let bar_rect = Rectangle::new(window.location, (surface_size.w, TITLE_BAR_HEIGHT).into());
         elements.push(CustomRenderElement::Solid(SolidColorRenderElement::new(
@@ -658,22 +674,6 @@ fn gather_elements(
             [0.15, 0.15, 0.15, 1.0],
             Kind::Unspecified
         )));
-
-        // B. Window Surface Tree (Higher in this window's stack)
-        let surface_location = Point::from((window.location.x, window.location.y + TITLE_BAR_HEIGHT));
-        elements.extend(render_elements_from_surface_tree::<GlowRenderer, CustomRenderElement>(
-            renderer, 
-            window.toplevel.wl_surface(), 
-            surface_location, 
-            1.0, 1.0, 
-            Kind::Unspecified
-        ));
-    }
-
-    // 3. Egui Overlay (Top-most)
-    match egui_element {
-        Ok(egui_tex) => elements.push(CustomRenderElement::Egui(egui_tex)),
-        Err(err) => error!("Failed to render egui overlay: {:?}", err),
     }
 
     Ok((elements, pending_close))
