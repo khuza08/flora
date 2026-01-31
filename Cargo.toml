@@ -4,12 +4,13 @@ version = "26.0.1"
 edition = "2021"
 
 [dependencies]
-smithay = { version = "0.7.0", default-features = false, features = ["backend_drm", "backend_udev", "backend_winit", "backend_x11", "desktop", "renderer_glow", "wayland_frontend"] }
+smithay = { version = "0.7.0", default-features = false, features = ["backend_drm", "backend_udev", "backend_libinput", "backend_gbm", "desktop", "renderer_glow", "wayland_frontend", "x11rb", "backend_winit"] }
 wayland-server = "0.31"
 calloop = "0.12"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1.0"
+libc = "0.2"
 
 [dev-dependencies]
 wayland-client = "0.31"
