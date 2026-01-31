@@ -1,6 +1,6 @@
 use smithay::{
     reexports::wayland_server::{DisplayHandle, protocol::wl_surface::WlSurface},
-    utils::{Point, Physical},
+    utils::{Point, Physical, Rectangle},
     wayland::{
         compositor::{CompositorState, CompositorHandler},
         shell::xdg::{XdgShellState, XdgShellHandler, ToplevelSurface, PopupSurface, PositionerState},
@@ -15,11 +15,11 @@ use smithay::{
         allocator::gbm::GbmAllocator,
         drm::exporter::gbm::GbmFramebufferExporter,
         egl::EGLDisplay,
-        renderer::{
-            glow::GlowRenderer,
-        },
+        renderer::glow::GlowRenderer,
     },
 };
+
+use smithay_egui::EguiState;
 
 pub use smithay::reexports::wayland_server::backend::ClientData;
 pub use smithay::wayland::compositor::CompositorClientState;
@@ -35,7 +35,14 @@ impl ClientData for FloraClientData {}
 pub struct Window {
     pub toplevel: ToplevelSurface,
     pub location: Point<i32, Physical>,
+    pub bar_id: smithay::backend::renderer::element::Id,
+    pub bar_commit_counter: smithay::backend::renderer::utils::CommitCounter,
 }
+
+
+pub const TITLE_BAR_HEIGHT: i32 = 30;
+
+
 
 pub struct FloraState {
     pub display_handle: DisplayHandle,
@@ -64,6 +71,9 @@ pub struct FloraState {
     pub socket_name: std::ffi::OsString,
     pub needs_redraw: bool,
     pub _drm_device: Option<DrmDevice>,
+    // Egui state for UI rendering
+    pub egui_state: EguiState,
+    pub start_time: std::time::Instant,
 }
 
 impl FloraState {
@@ -100,6 +110,9 @@ impl FloraState {
             socket_name: "".into(),
             needs_redraw: false,
             _drm_device: None,
+            // Initialize EguiState with default output size (will be updated later)
+            egui_state: EguiState::new(Rectangle::new((0, 0).into(), (1280, 800).into())),
+            start_time: std::time::Instant::now(),
         }
     }
 }
@@ -116,6 +129,7 @@ impl SeatHandler for FloraState {
         
         // Update text input focus to track keyboard focus
         let text_input = self.seat.text_input();
+        text_input.set_focus(focused.cloned());
         if focused.is_some() {
             text_input.enter();
         } else {
@@ -149,7 +163,12 @@ impl XdgShellHandler for FloraState {
         });
         surface.send_configure();
         let wl_surface = surface.wl_surface().clone();
-        self.windows.push(Window { toplevel: surface, location: (100, 100).into() });
+        self.windows.push(Window { 
+            toplevel: surface, 
+            location: (100, 100).into(),
+            bar_id: smithay::backend::renderer::element::Id::new(),
+            bar_commit_counter: smithay::backend::renderer::utils::CommitCounter::default(),
+        });
         if let Some(keyboard) = self.seat.get_keyboard() {
             keyboard.set_focus(self, Some(wl_surface.clone()), smithay::utils::SERIAL_COUNTER.next_serial());
         }
