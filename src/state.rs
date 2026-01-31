@@ -61,7 +61,6 @@ pub struct FloraState {
     pub windows: Vec<Window>,
     pub pointer_location: Point<f64, Physical>,
     pub grab_state: Option<(usize, Point<f64, Physical>)>,
-    pub input_context: Option<smithay::reexports::input::Libinput>,
     pub socket_name: std::ffi::OsString,
     pub needs_redraw: bool,
     pub _drm_device: Option<DrmDevice>,
@@ -98,7 +97,6 @@ impl FloraState {
             windows: Vec::new(),
             pointer_location: (0.0, 0.0).into(),
             grab_state: None,
-            input_context: None,
             socket_name: "".into(),
             needs_redraw: false,
             _drm_device: None,
@@ -113,7 +111,17 @@ impl SeatHandler for FloraState {
     type PointerFocus = WlSurface;
     type TouchFocus = WlSurface;
     fn seat_state(&mut self) -> &mut SeatState<Self> { &mut self.seat_state }
-    fn focus_changed(&mut self, _seat: &Seat<Self>, _focused: Option<&WlSurface>) {}
+    fn focus_changed(&mut self, _seat: &Seat<Self>, focused: Option<&WlSurface>) {
+        use smithay::wayland::text_input::TextInputSeat;
+        
+        // Update text input focus to track keyboard focus
+        let text_input = self.seat.text_input();
+        if focused.is_some() {
+            text_input.enter();
+        } else {
+            text_input.leave();
+        }
+    }
     fn cursor_image(&mut self, _seat: &Seat<Self>, _image: smithay::input::pointer::CursorImageStatus) {}
 }
 

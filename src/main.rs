@@ -212,9 +212,11 @@ fn handle_input_event(state: &mut FloraState, event: FloraInputEvent) {
         }
         FloraInputEvent::PointerMotionAbsolute { location, time } => {
             if let Some(output) = state.output.as_ref() {
-                let size = output.current_mode().unwrap().size;
-                state.pointer_location.x = location.x * size.w as f64;
-                state.pointer_location.y = location.y * size.h as f64;
+                if let Some(mode) = output.current_mode() {
+                    let size = mode.size;
+                    state.pointer_location.x = location.x * size.w as f64;
+                    state.pointer_location.y = location.y * size.h as f64;
+                }
             }
             update_grab(state);
             forward_pointer_motion(state, time);
@@ -229,9 +231,11 @@ fn handle_input_event(state: &mut FloraState, event: FloraInputEvent) {
 
 fn clamp_pointer(state: &mut FloraState) {
     if let Some(output) = state.output.as_ref() {
-        let size = output.current_mode().unwrap().size;
-        state.pointer_location.x = state.pointer_location.x.max(0.0).min(size.w as f64);
-        state.pointer_location.y = state.pointer_location.y.max(0.0).min(size.h as f64);
+        if let Some(mode) = output.current_mode() {
+            let size = mode.size;
+            state.pointer_location.x = state.pointer_location.x.max(0.0).min(size.w as f64);
+            state.pointer_location.y = state.pointer_location.y.max(0.0).min(size.h as f64);
+        }
     }
 }
 
