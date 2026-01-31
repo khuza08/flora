@@ -299,7 +299,7 @@ impl CompositorHandler for FloraState {
         
         use smithay::wayland::compositor::with_states;
         with_states(surface, |states| {
-            let attrs = states.cached_state.get::<SurfaceAttributes>();
+            let mut attrs = states.cached_state.get::<SurfaceAttributes>();
             info!("  Cached state: buffer={:?}, damage={:?}, frame_callbacks={}", 
                 attrs.current().buffer.is_some(),
                 attrs.current().damage.len(),
