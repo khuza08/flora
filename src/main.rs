@@ -215,7 +215,8 @@ fn handle_input_event(state: &mut FloraState, event: FloraInputEvent) {
         FloraInputEvent::PointerMotion { delta, time } => {
             state.pointer_location += delta;
             clamp_pointer(state);
-            forward_pointer_to_egui(state);
+            let scale = get_output_scale(state);
+            forward_pointer_to_egui(state, scale);
             update_grab(state);
             forward_pointer_motion(state, time);
             state.needs_redraw = true;
@@ -229,7 +230,8 @@ fn handle_input_event(state: &mut FloraState, event: FloraInputEvent) {
                 }
             }
             
-            forward_pointer_to_egui(state);
+            let scale = get_output_scale(state);
+            forward_pointer_to_egui(state, scale);
             update_grab(state);
             forward_pointer_motion(state, time);
             state.needs_redraw = true;
@@ -241,9 +243,43 @@ fn handle_input_event(state: &mut FloraState, event: FloraInputEvent) {
     }
 }
 
-fn forward_pointer_to_egui(state: &mut FloraState) {
-    let p = state.pointer_location.to_logical(1.0);
+fn forward_pointer_to_egui(state: &mut FloraState, scale: f64) {
+    let p = state.pointer_location.to_logical(scale);
     state.egui_state.handle_pointer_motion((p.x as i32, p.y as i32).into());
+}
+
+fn get_output_scale(state: &FloraState) -> f64 {
+    state.output.as_ref()
+        .map(|o| o.current_scale().fractional_scale())
+        .unwrap_or(1.0)
+}
+
+/// Hit region for window hit-testing
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum HitRegion {
+    TitleBar,
+    Client { local_x: i32, local_y: i32 },
+    None,
+}
+
+/// Shared hit-test logic for a single window
+fn hit_test_window(pointer: Point<f64, Physical>, window_location: Point<i32, Physical>, surface_size: smithay::utils::Size<i32, smithay::utils::Logical>) -> HitRegion {
+    let px = pointer.x.round() as i32;
+    let py = pointer.y.round() as i32;
+    let relative_x = px - window_location.x;
+    let relative_y = py - window_location.y;
+    
+    if relative_x >= 0 && relative_x < surface_size.w {
+        if relative_y >= 0 && relative_y < TITLE_BAR_HEIGHT {
+            HitRegion::TitleBar
+        } else if relative_y >= TITLE_BAR_HEIGHT && relative_y < (TITLE_BAR_HEIGHT + surface_size.h) {
+            HitRegion::Client { local_x: relative_x, local_y: relative_y - TITLE_BAR_HEIGHT }
+        } else {
+            HitRegion::None
+        }
+    } else {
+        HitRegion::None
+    }
 }
 
 fn clamp_pointer(state: &mut FloraState) {
@@ -269,27 +305,21 @@ fn update_grab(state: &mut FloraState) {
 
 fn forward_pointer_motion(state: &mut FloraState, time: u32) {
     let serial = SERIAL_COUNTER.next_serial();
+    let scale = get_output_scale(state);
+    
     if let Some(pointer) = state.seat.get_pointer() {
         let under = state.windows.iter().rev().find_map(|w| {
-            let px = state.pointer_location.x.round() as i32;
-            let py = state.pointer_location.y.round() as i32;
-            let relative_x = px - w.location.x;
-            let relative_y = py - w.location.y;
-            
             let surface_size = w.toplevel.current_state().size.unwrap_or((800, 600).into());
-            
-            if relative_x >= 0 && relative_x < surface_size.w && 
-               relative_y >= TITLE_BAR_HEIGHT && relative_y < (TITLE_BAR_HEIGHT + surface_size.h) {
-                let local_x = relative_x;
-                let local_y = relative_y - TITLE_BAR_HEIGHT;
-                Some((w.toplevel.wl_surface().clone(), Point::<f64, smithay::utils::Logical>::from((local_x as f64, local_y as f64))))
-            } else {
-                None
+            match hit_test_window(state.pointer_location, w.location, surface_size) {
+                HitRegion::Client { local_x, local_y } => {
+                    Some((w.toplevel.wl_surface().clone(), Point::<f64, smithay::utils::Logical>::from((local_x as f64, local_y as f64))))
+                }
+                _ => None
             }
         });
 
         pointer.motion(state, under, &smithay::input::pointer::MotionEvent {
-            location: state.pointer_location.to_logical(1.0),
+            location: state.pointer_location.to_logical(scale),
             serial, time,
         });
     }
@@ -318,41 +348,30 @@ fn handle_pointer_button(state: &mut FloraState, button: u32, pressed: bool, tim
     }
     
     if pressed {
+        // Use shared hit-test helper
         let hit = state.windows.iter().enumerate().rev().find_map(|(i, w)| {
-            let px = state.pointer_location.x.round() as i32;
-            let py = state.pointer_location.y.round() as i32;
-            let relative_x = px - w.location.x;
-            let relative_y = py - w.location.y;
-            
             let surface_size = w.toplevel.current_state().size.unwrap_or((800, 600).into());
-            
-            if relative_x >= 0 && relative_x < surface_size.w && 
-               relative_y >= 0 && relative_y < (TITLE_BAR_HEIGHT + surface_size.h) {
-                
-                if relative_y < TITLE_BAR_HEIGHT {
-                    // Title bar clicked - potential for grab
-                }
-                
+            let region = hit_test_window(state.pointer_location, w.location, surface_size);
+            if region != HitRegion::None {
                 let w_loc_f = Point::<f64, Physical>::from((w.location.x as f64, w.location.y as f64));
-                Some((i, state.pointer_location - w_loc_f))
+                Some((i, state.pointer_location - w_loc_f, region))
             } else {
                 None
             }
         });
 
-        if let Some((idx, offset)) = hit {
+        if let Some((idx, offset, region)) = hit {
             let surface = state.windows[idx].toplevel.wl_surface().clone();
             if let Some(keyboard) = state.seat.get_keyboard() {
                 keyboard.set_focus(state, Some(surface), serial);
             }
             
-            let py = state.pointer_location.y.round() as i32;
-            let rel_y = py - state.windows[idx].location.y;
-
+            // Bring window to front
             let win = state.windows.remove(idx);
             state.windows.push(win);
             
-            if rel_y < TITLE_BAR_HEIGHT {
+            // Start grab if title bar was clicked
+            if region == HitRegion::TitleBar {
                 state.grab_state = Some((state.windows.len() - 1, offset));
             }
         }
@@ -472,35 +491,15 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
             1.0,
         );
         
-        match egui_element {
-            Ok(egui_tex) => {
-                elements.push(CustomRenderElement::Egui(egui_tex));
-            }
-            Err(err) => {
-                error!("Failed to render egui overlay: {:?}", err);
-            }
-        }
-        
         // Execute pending actions from egui
         if let Some(idx) = pending_close {
             state.windows[idx].toplevel.send_close();
         }
         
-        // Draw client surfaces and title bar backgrounds
+        // RENDER ORDER: Background elements first (rendered at the back)
+        // 1. Title Bar Backgrounds (solid gray - at the very back)
         for window in &state.windows {
             let surface_size = window.toplevel.current_state().size.unwrap_or((800, 600).into());
-            
-            // Client Surface (shifted down by TITLE_BAR_HEIGHT)
-            let surface_location = Point::from((window.location.x, window.location.y + TITLE_BAR_HEIGHT));
-            elements.extend(render_elements_from_surface_tree::<GlowRenderer, CustomRenderElement>(
-                renderer, 
-                window.toplevel.wl_surface(), 
-                surface_location, 
-                1.0, 1.0, 
-                Kind::Unspecified
-            ));
-
-            // Title Bar Background (Solid Gray) - rendered below egui overlay
             let bar_rect = smithay::utils::Rectangle::new(window.location, (surface_size.w, TITLE_BAR_HEIGHT).into());
             elements.push(CustomRenderElement::Solid(SolidColorRenderElement::new(
                 window.bar_id.clone(),
@@ -509,6 +508,28 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
                 [0.15, 0.15, 0.15, 1.0],
                 Kind::Unspecified
             )));
+        }
+        
+        // 2. Client Surfaces (shifted down by TITLE_BAR_HEIGHT)
+        for window in &state.windows {
+            let surface_location = Point::from((window.location.x, window.location.y + TITLE_BAR_HEIGHT));
+            elements.extend(render_elements_from_surface_tree::<GlowRenderer, CustomRenderElement>(
+                renderer, 
+                window.toplevel.wl_surface(), 
+                surface_location, 
+                1.0, 1.0, 
+                Kind::Unspecified
+            ));
+        }
+        
+        // 3. Egui Overlay (on top of everything)
+        match egui_element {
+            Ok(egui_tex) => {
+                elements.push(CustomRenderElement::Egui(egui_tex));
+            }
+            Err(err) => {
+                error!("Failed to render egui overlay: {:?}", err);
+            }
         }
         
         if let Err(e) = compositor.render_frame::<GlowRenderer, CustomRenderElement>(renderer, &elements, color, smithay::backend::drm::compositor::FrameFlags::empty()) {
