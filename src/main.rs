@@ -594,9 +594,9 @@ fn main() -> anyhow::Result<()> {
             let (input_sender, input_receiver) = smithay::reexports::calloop::channel::channel::<FloraInputEvent>();
             
             // Zero-Latency Input: Insert receiver as a calloop source
-            handle.insert_source(input_receiver, |event, _, state| {
+            let input_display = display.clone();
+            handle.insert_source(input_receiver, move |event, _, state| {
                 if let smithay::reexports::calloop::channel::Event::Msg(input_event) = event {
-                    info!("Main Loop: Input event triggered from channel");
                     match input_event {
                         FloraInputEvent::Keyboard { keycode, pressed, time } => {
                             info!("🎹 Keyboard event received! Key={} Pressed={}", keycode, pressed);
@@ -609,6 +609,7 @@ fn main() -> anyhow::Result<()> {
                                     FilterResult::Forward
                                 });
                             }
+                            state.needs_redraw = true;
                         }
                         FloraInputEvent::PointerMotion { delta, time } => {
                             state.pointer_location += delta;
@@ -687,6 +688,8 @@ fn main() -> anyhow::Result<()> {
                             state.needs_redraw = true;
                         }
                     }
+                    // CRITICAL: Proactively flush Wayland display after input event to ensure responsiveness
+                    let _ = input_display.borrow_mut().flush_clients();
                 }
             }).expect("Failed to insert input source");
 
@@ -736,7 +739,6 @@ fn main() -> anyhow::Result<()> {
                             _ => {}
                         }
                     }
-                    std::thread::sleep(Duration::from_millis(1));
                 }
             });
             input_initialized = true;
@@ -777,6 +779,9 @@ fn main() -> anyhow::Result<()> {
                     if let Err(e) = compositor.commit_frame() {
                         error!("Rendering: commit_frame failed: {:?}", e);
                     }
+
+                    // Proactively flush after frame to ensure frame callbacks reach clients
+                    let _ = display.borrow_mut().flush_clients();
                 }
             }
             state.needs_redraw = false;
