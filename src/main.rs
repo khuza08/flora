@@ -389,6 +389,7 @@ fn handle_pointer_button(state: &mut FloraState, button: u32, pressed: bool, tim
 }
 
 fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports::wayland_server::Display<FloraState>>>) -> Result<()> {
+    let scale = get_output_scale(state);
     if let (Some(compositor), Some(renderer)) = (state.compositor.as_mut(), state.renderer.as_mut()) {
         let color = [0.2, 0.2, 0.2, 1.0];
         let mut elements: Vec<CustomRenderElement> = Vec::new();
@@ -476,8 +477,8 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
             },
             renderer,
             Rectangle::new((0, 0).into(), (output_size.w, output_size.h).into()),
-            1.0,
-            1.0,
+            scale,
+            scale as f32,
         );
         
         // Execute pending actions from egui
