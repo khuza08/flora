@@ -55,7 +55,7 @@ use smithay::{
     utils::SERIAL_COUNTER,
 };
 use tracing::{info, warn, error};
-use std::{time::Duration, sync::Arc, path::PathBuf, fs::OpenOptions, os::unix::io::{AsRawFd, OwnedFd}};
+use std::{time::Duration, sync::Arc, path::PathBuf, fs::OpenOptions, os::unix::io::AsRawFd};
 use libc;
 
 pub struct Window {
@@ -192,6 +192,20 @@ impl ClientData for FloraClientData {}
 
 impl FloraState {
     pub fn new(dh: &DisplayHandle) -> Self {
+        // Take control of TTY if possible to prevent leakage and EBUSY
+        unsafe {
+            if let Ok(file) = OpenOptions::new().read(true).write(true).open("/dev/tty") {
+                let fd = file.as_raw_fd();
+                const KDSETMODE: libc::c_ulong = 0x4B3A;
+                const KD_GRAPHICS: libc::c_ulong = 0x01;
+                if libc::ioctl(fd, KDSETMODE, KD_GRAPHICS) == 0 {
+                    info!("Flora: TTY switched to Graphics mode successfully");
+                } else {
+                    warn!("Flora: Failed to set TTY graphics mode: {}", std::io::Error::last_os_error());
+                }
+            }
+        }
+
         let compositor_state = CompositorState::new::<Self>(dh);
         let xdg_shell_state = XdgShellState::new::<Self>(dh);
         let shm_state = ShmState::new::<Self>(dh, vec![]);
@@ -332,28 +346,15 @@ impl BufferHandler for FloraState {
 struct FloraLibinputInterface;
 
 impl smithay::reexports::input::LibinputInterface for FloraLibinputInterface {
-    fn open_restricted(&mut self, path: &std::path::Path, _flags: i32) -> Result<std::os::unix::io::OwnedFd, i32> {
-        info!("Libinput: Opening {:?} (Read-Write for Grab)", path);
+    fn open_restricted(&mut self, path: &std::path::Path, flags: i32) -> Result<std::os::unix::io::OwnedFd, i32> {
+        info!("Libinput: Opening {:?} (Flags: {})", path, flags);
         let result = OpenOptions::new()
-            .read(true)
-            .write(true) 
+            .read((flags & libc::O_ACCMODE) != libc::O_WRONLY)
+            .write((flags & libc::O_ACCMODE) != libc::O_RDONLY)
             .open(path);
         
         match result {
-            Ok(file) => {
-                let fd: OwnedFd = file.into();
-                // Attempt exclusive grab to prevent TTY leakage
-                // EVIOCGRAB = _IOW('E', 0x90, int) -> 0x40044590
-                unsafe {
-                    const EVIOCGRAB: libc::c_ulong = 0x40044590;
-                    if libc::ioctl(fd.as_raw_fd(), EVIOCGRAB, 1) != 0 {
-                        warn!("Libinput: Failed to grab device {:?}. TTY leakage may occur. (Error: {})", path, std::io::Error::last_os_error());
-                    } else {
-                        info!("Libinput: Successfully grabbed device eksklusif {:?}", path);
-                    }
-                }
-                Ok(fd)
-            }
+            Ok(file) => Ok(file.into()),
             Err(e) => Err(e.raw_os_error().unwrap_or(libc::EIO)),
         }
     }
@@ -656,10 +657,12 @@ fn main() -> anyhow::Result<()> {
                         error!("Input Thread: Libinput dispatch error: {:?}", e);
                     }
                     for event in &mut libinput {
-                        // Broad logging for debugging missing events
+                        // Catch-all log to see if ANY data reaches us
+                        info!("Input Thread: EVENT RECEIVED: {:?}", event);
+                        
                         match event {
                             LibinputEvent::Device(DeviceEvent::Added(d)) => {
-                                info!("Input Thread: Event: DeviceAdded({:?})", d.device().name());
+                                info!("Input Thread: Device Added: {:?}", d.device().name());
                             }
                             LibinputEvent::Keyboard(kb) => {
                                 info!("Input Thread: Raw Keyboard: key={} state={:?}", kb.key(), kb.key_state());
