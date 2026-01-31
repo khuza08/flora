@@ -90,6 +90,7 @@ pub struct FloraState {
     pub input_context: Option<smithay::reexports::input::Libinput>,
     pub socket_name: std::ffi::OsString,
     pub needs_redraw: bool,
+    pub _drm_device: Option<DrmDevice>,
 }
 
 use smithay::delegate_seat;
@@ -259,7 +260,7 @@ impl FloraState {
             text_input_manager_state,
             seat_state,
             seat,
-            output: None,
+            output: Some(output),
             should_stop: false,
             drm_devices: Vec::new(),
             renderer: None,
@@ -272,6 +273,7 @@ impl FloraState {
             input_context: None,
             socket_name: std::ffi::OsString::new(),
             needs_redraw: true,
+            _drm_device: None,
         }
     }
 }
@@ -321,7 +323,12 @@ impl XdgShellHandler for FloraState {
         // Set keyboard focus to the new window
         let serial = SERIAL_COUNTER.next_serial();
         if let Some(keyboard) = self.seat.get_keyboard() {
-            keyboard.set_focus(self, Some(wl_surface), serial);
+            keyboard.set_focus(self, Some(wl_surface.clone()), serial);
+        }
+
+        // Notify client about the output
+        if let Some(output) = self.output.as_ref() {
+            output.enter(&wl_surface);
         }
 
         self.needs_redraw = true;
@@ -451,12 +458,12 @@ fn main() -> anyhow::Result<()> {
     handle.insert_source(
         Generic::new(poll_fd, Interest::READ, Mode::Level),
         move |_event, _metadata, state| {
-            if let Ok(mut disp) = display_clone.try_borrow_mut() {
-                if let Err(e) = disp.dispatch_clients(state) {
-                    error!("Display source: dispatch_clients error: {:?}", e);
-                }
-                let _ = disp.flush_clients();
+            // Using borrow_mut because we are in the same thread and should be the only one dispatching
+            let mut disp = display_clone.borrow_mut();
+            if let Err(e) = disp.dispatch_clients(state) {
+                error!("Display source: dispatch_clients error: {:?}", e);
             }
+            let _ = disp.flush_clients();
             Ok(PostAction::Continue)
         }
     ).map_err(|_e| anyhow::anyhow!("Failed to insert display event source"))?;
@@ -536,10 +543,21 @@ fn main() -> anyhow::Result<()> {
                         Size::from((64, 64)), Some(gbm.clone()),
                     ).expect("Compositor failed");
 
+                    use smithay::backend::drm::DrmEvent;
+                    handle.insert_source(_notifier, |event, _metadata, state| {
+                        match event {
+                            DrmEvent::VBlank(_crtc) => {
+                                state.needs_redraw = true;
+                            }
+                            DrmEvent::Error(err) => error!("DRM Event Error: {:?}", err),
+                        }
+                    }).expect("Failed to insert DRM notifier");
+
                     state._egl_display = Some(egl_display);
                     state._gbm_device = Some(gbm);
                     state.renderer = Some(renderer);
                     state.compositor = Some(compositor);
+                    state._drm_device = Some(drm_device);
                     state.needs_redraw = true;
                     info!("Screen output initialized successfully!");
                 }
@@ -717,7 +735,9 @@ fn main() -> anyhow::Result<()> {
                     }
                     
                     // Render the frame
-                    let _ = compositor.render_frame::<GlowRenderer, WaylandSurfaceRenderElement<GlowRenderer>>(renderer, &elements, color, smithay::backend::drm::compositor::FrameFlags::empty());
+                    if let Err(e) = compositor.render_frame::<GlowRenderer, WaylandSurfaceRenderElement<GlowRenderer>>(renderer, &elements, color, smithay::backend::drm::compositor::FrameFlags::empty()) {
+                        error!("Rendering: render_frame failed: {:?}", e);
+                    }
                     
                     // IMPORTANT: Process frame callbacks BEFORE commit_frame or right after to ensure clients know we finished a frame
                     let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u32;
@@ -729,17 +749,15 @@ fn main() -> anyhow::Result<()> {
                     }
 
                     // Commit to GPU
-                    let _ = compositor.commit_frame();
+                    if let Err(e) = compositor.commit_frame() {
+                        error!("Rendering: commit_frame failed: {:?}", e);
+                    }
                 }
             }
             state.needs_redraw = false;
         }
 
-        // E. Flush Wayland Display
-        if let Ok(mut disp) = display.try_borrow_mut() {
-            let _ = disp.dispatch_clients(&mut state);
-            let _ = disp.flush_clients();
-        }
+        // E. Flush Wayland Display happens in the event source callback
     }
 
     Ok(())
