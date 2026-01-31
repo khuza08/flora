@@ -89,8 +89,11 @@ pub fn spawn_input_thread(input_sender: smithay::reexports::calloop::channel::Se
                                 let _ = input_sender.send(FloraInputEvent::PointerMotion { delta: (m.dx(), m.dy()).into(), time: m.time() as u32 });
                             }
                             PointerEvent::MotionAbsolute(m) => {
-                                // Normalized coordinates (0.0 to 1.0)
-                                let _ = input_sender.send(FloraInputEvent::PointerMotionAbsolute { location: (m.absolute_x(), m.absolute_y()).into(), time: m.time() as u32 });
+                                // Use transformed coordinates normalized to 0.0-1.0
+                                let _ = input_sender.send(FloraInputEvent::PointerMotionAbsolute { 
+                                    location: (m.absolute_x_transformed(1), m.absolute_y_transformed(1)).into(), 
+                                    time: m.time() as u32 
+                                });
                             }
                             PointerEvent::Button(b) => {
                                 let _ = input_sender.send(FloraInputEvent::PointerButton { button: b.button(), pressed: b.button_state() == ButtonState::Pressed, time: b.time() as u32 });
