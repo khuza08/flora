@@ -55,7 +55,7 @@ use smithay::{
     utils::SERIAL_COUNTER,
 };
 use tracing::{info, warn, error};
-use std::{time::Duration, sync::Arc, path::PathBuf, fs::OpenOptions, os::unix::io::AsRawFd};
+use std::{time::Duration, sync::Arc, path::PathBuf, fs::OpenOptions, os::unix::io::{AsRawFd, FromRawFd}};
 use libc;
 
 pub struct Window {
@@ -194,14 +194,17 @@ impl FloraState {
     pub fn new(dh: &DisplayHandle) -> Self {
         // Take control of TTY if possible to prevent leakage and EBUSY
         unsafe {
-            if let Ok(file) = OpenOptions::new().read(true).write(true).open("/dev/tty") {
-                let fd = file.as_raw_fd();
-                const KDSETMODE: libc::c_ulong = 0x4B3A;
-                const KD_GRAPHICS: libc::c_ulong = 0x01;
-                if libc::ioctl(fd, KDSETMODE, KD_GRAPHICS) == 0 {
-                    info!("Flora: TTY switched to Graphics mode successfully");
-                } else {
-                    warn!("Flora: Failed to set TTY graphics mode: {}", std::io::Error::last_os_error());
+            for path in ["/dev/tty0", "/dev/tty"] {
+                if let Ok(file) = OpenOptions::new().read(true).write(true).open(path) {
+                    let fd = file.as_raw_fd();
+                    const KDSETMODE: libc::c_ulong = 0x4B3A;
+                    const KD_GRAPHICS: libc::c_ulong = 0x01;
+                    if libc::ioctl(fd, KDSETMODE, KD_GRAPHICS) == 0 {
+                        info!("Flora: TTY switched to Graphics mode successfully on {}", path);
+                        break;
+                    } else {
+                        warn!("Flora: Failed to set TTY graphics mode on {}: {}", path, std::io::Error::last_os_error());
+                    }
                 }
             }
         }
@@ -347,20 +350,21 @@ struct FloraLibinputInterface;
 
 impl smithay::reexports::input::LibinputInterface for FloraLibinputInterface {
     fn open_restricted(&mut self, path: &std::path::Path, flags: i32) -> Result<std::os::unix::io::OwnedFd, i32> {
-        info!("Libinput: Opening {:?} (Flags: {})", path, flags);
-        let result = OpenOptions::new()
-            .read((flags & libc::O_ACCMODE) != libc::O_WRONLY)
-            .write((flags & libc::O_ACCMODE) != libc::O_RDONLY)
-            .open(path);
-        
-        match result {
-            Ok(file) => Ok(file.into()),
-            Err(e) => Err(e.raw_os_error().unwrap_or(libc::EIO)),
+        use std::os::unix::ffi::OsStrExt;
+        let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        let fd = unsafe { libc::open(c_path.as_ptr(), flags) };
+        if fd < 0 {
+            let err = std::io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO);
+            warn!("Libinput: Failed to open {:?}: {}", path, err);
+            Err(err)
+        } else {
+            info!("Libinput: Successfully opened {:?} (fd: {}, flags: {:x})", path, fd, flags);
+            Ok(unsafe { std::os::unix::io::OwnedFd::from_raw_fd(fd) })
         }
     }
 
-    fn close_restricted(&mut self, fd: std::os::unix::io::OwnedFd) {
-        drop(fd);
+    fn close_restricted(&mut self, _fd: std::os::unix::io::OwnedFd) {
+        // OwnedFd closes itself when dropped, so no action needed here
     }
 }
 
