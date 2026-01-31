@@ -3,7 +3,7 @@ use smithay::{
     utils::{Point, Physical, Rectangle},
     wayland::{
         compositor::{CompositorState, CompositorHandler},
-        shell::xdg::{XdgShellState, XdgShellHandler, ToplevelSurface, PopupSurface, PositionerState},
+        shell::xdg::{XdgShellState},
         shm::{ShmState, ShmHandler},
         selection::{data_device::DataDeviceState, primary_selection::PrimarySelectionState},
         text_input::TextInputManagerState,
@@ -28,23 +28,13 @@ pub use smithay::reexports::wayland_server::backend::ClientData;
 pub use smithay::wayland::compositor::CompositorClientState;
 
 use std::path::PathBuf;
+use crate::compositor::Window;
 
 pub struct FloraClientData {
     pub compositor_state: CompositorClientState,
 }
 
 impl ClientData for FloraClientData {}
-
-pub struct Window {
-    pub toplevel: ToplevelSurface,
-    pub location: Point<i32, Physical>,
-    pub bar_id: smithay::backend::renderer::element::Id,
-    pub bar_commit_counter: smithay::backend::renderer::utils::CommitCounter,
-}
-
-
-pub const TITLE_BAR_HEIGHT: i32 = 30;
-
 
 pub enum BackendData {
     Drm {
@@ -77,14 +67,11 @@ pub struct FloraState {
     pub drm_devices: Vec<PathBuf>,
     pub renderer: Option<GlowRenderer>,
     pub backend_data: BackendData,
-    // Windows for rendering and interaction
-    // Windows for rendering and interaction
     pub windows: Vec<Window>,
     pub pointer_location: Point<f64, Physical>,
     pub grab_state: Option<(usize, Point<f64, Physical>)>,
     pub socket_name: std::ffi::OsString,
     pub needs_redraw: bool,
-    // Egui state for UI rendering
     pub egui_state: EguiState,
     pub start_time: std::time::Instant,
 }
@@ -94,7 +81,6 @@ impl FloraState {
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(display_handle, "seat0");
         
-        // Add keyboard and pointer capabilities to the seat
         seat.add_keyboard(Default::default(), 200, 25).expect("Failed to add keyboard to seat");
         seat.add_pointer();
 
@@ -120,15 +106,13 @@ impl FloraState {
             grab_state: None,
             socket_name: "".into(),
             needs_redraw: false,
-            // Initialize EguiState with default output size (will be updated later)
             egui_state: EguiState::new(Rectangle::new((0, 0).into(), (1280, 800).into())),
             start_time: std::time::Instant::now(),
         }
     }
 }
 
-// Delegate implementations
-
+// Delegate implementations for basic infrastructure
 impl SeatHandler for FloraState {
     type KeyboardFocus = WlSurface;
     type PointerFocus = WlSurface;
@@ -136,8 +120,6 @@ impl SeatHandler for FloraState {
     fn seat_state(&mut self) -> &mut SeatState<Self> { &mut self.seat_state }
     fn focus_changed(&mut self, _seat: &Seat<Self>, focused: Option<&WlSurface>) {
         use smithay::wayland::text_input::TextInputSeat;
-        
-        // Update text input focus to track keyboard focus
         let text_input = self.seat.text_input();
         text_input.set_focus(focused.cloned());
         if focused.is_some() {
@@ -165,34 +147,6 @@ impl CompositorHandler for FloraState {
 
 smithay::delegate_compositor!(FloraState);
 
-impl XdgShellHandler for FloraState {
-    fn xdg_shell_state(&mut self) -> &mut XdgShellState { &mut self.xdg_shell_state }
-    fn new_toplevel(&mut self, surface: ToplevelSurface) {
-        surface.with_pending_state(|state| {
-            state.size = Some((800, 600).into());
-        });
-        surface.send_configure();
-        let wl_surface = surface.wl_surface().clone();
-        self.windows.push(Window { 
-            toplevel: surface, 
-            location: (100, 100).into(),
-            bar_id: smithay::backend::renderer::element::Id::new(),
-            bar_commit_counter: smithay::backend::renderer::utils::CommitCounter::default(),
-        });
-        if let Some(keyboard) = self.seat.get_keyboard() {
-            keyboard.set_focus(self, Some(wl_surface.clone()), smithay::utils::SERIAL_COUNTER.next_serial());
-        }
-        if let Some(output) = self.output.as_ref() { output.enter(&wl_surface); }
-        self.needs_redraw = true;
-    }
-    fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) { surface.send_configure().ok(); }
-    fn grab(&mut self, _surface: PopupSurface, _seat: smithay::reexports::wayland_server::protocol::wl_seat::WlSeat, _serial: smithay::utils::Serial) {}
-    fn reposition_request(&mut self, _surface: PopupSurface, _positioner: PositionerState, _token: u32) {}
-    fn ack_configure(&mut self, _surface: WlSurface, _configure: smithay::wayland::shell::xdg::Configure) {}
-}
-
-smithay::delegate_xdg_shell!(FloraState);
-
 impl ShmHandler for FloraState {
     fn shm_state(&self) -> &ShmState { &self.shm_state }
 }
@@ -217,29 +171,6 @@ impl smithay::wayland::selection::data_device::ServerDndGrabHandler for FloraSta
 impl smithay::wayland::selection::primary_selection::PrimarySelectionHandler for FloraState {
     fn primary_selection_state(&self) -> &PrimarySelectionState { &self.primary_selection_state }
 }
-
-impl smithay::wayland::shell::xdg::decoration::XdgDecorationHandler for FloraState {
-    fn new_decoration(&mut self, toplevel: ToplevelSurface) {
-        toplevel.with_pending_state(|state| {
-            state.decoration_mode = Some(smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode::ServerSide);
-        });
-        toplevel.send_configure();
-    }
-    fn request_mode(&mut self, toplevel: ToplevelSurface, mode: smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode) {
-        toplevel.with_pending_state(|state| {
-            state.decoration_mode = Some(mode);
-        });
-        toplevel.send_configure();
-    }
-    fn unset_mode(&mut self, toplevel: ToplevelSurface) {
-        toplevel.with_pending_state(|state| {
-            state.decoration_mode = Some(smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode::ServerSide);
-        });
-        toplevel.send_configure();
-    }
-}
-
-smithay::delegate_xdg_decoration!(FloraState);
 
 impl smithay::wayland::output::OutputHandler for FloraState {}
 

@@ -13,6 +13,7 @@ smithay = { version = "0.7.0", default-features = false, features = [
     "backend_udev", 
     "backend_libinput", 
     "backend_gbm", 
+    "backend_winit",
     "desktop", 
     "renderer_glow", 
     "wayland_frontend", 

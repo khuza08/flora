@@ -37,7 +37,7 @@ pub fn init_winit_graphics() -> Result<(
 
     output.change_current_state(
         Some(mode),
-        Some(Transform::Flipped180),
+        Some(Transform::Normal),
         None,
         Some((0, 0).into()),
     );

@@ -1,49 +1,38 @@
-pub mod state;
-mod input;
+pub mod compositor;
+pub mod shell;
+pub mod input;
 mod backend;
 
 use smithay::{
     backend::{
         udev::{UdevBackend, UdevEvent},
-        renderer::{
-            glow::GlowRenderer,
-            element::{Kind, surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement}, solid::SolidColorRenderElement, texture::TextureRenderElement},
-        },
         drm::DrmEvent,
+        input::{KeyState, ButtonState, KeyboardKeyEvent, PointerMotionEvent, PointerButtonEvent, Event as InputEventTrait, AbsolutePositionEvent},
+        libinput::LibinputInputBackend,
     },
     reexports::{
-        calloop::{EventLoop, Interest, Mode, PostAction, generic::Generic, channel::Event},
+        calloop::{EventLoop, Interest, Mode, PostAction, generic::Generic},
         wayland_server::Display,
+        input::{Libinput},
     },
-    input::keyboard::FilterResult,
-    utils::{SERIAL_COUNTER, Point, Physical, Logical, Rectangle, Size},
-    wayland::compositor::{with_surface_tree_downward, TraversalAction, SurfaceAttributes},
+    utils::{SERIAL_COUNTER},
 };
-use smithay_egui::EguiState;
 
-use smithay::backend::renderer::gles::GlesTexture;
+#[cfg(feature = "winit")]
+use smithay::backend::winit::{WinitEvent, WinitInput};
 
 use std::{time::Duration, rc::Rc, cell::RefCell, os::unix::io::{AsRawFd, BorrowedFd}};
 use tracing::{info, warn, error};
 use anyhow::Result;
 
-use crate::state::{FloraState, FloraClientData, CompositorClientState, TITLE_BAR_HEIGHT, BackendData};
-use crate::input::{FloraInputEvent, spawn_input_thread};
+use crate::compositor::state::{FloraState, FloraClientData, CompositorClientState, BackendData};
+use crate::compositor::render::render_frame;
+use crate::input::FloraInputEvent;
+use crate::input::handler::handle_input_event;
 use crate::backend::drm::init_drm_graphics;
 
 #[cfg(feature = "winit")]
-use smithay::backend::winit::{WinitEvent, WinitInput};
-#[cfg(feature = "winit")]
-use smithay::backend::input::{Event as InputEventTrait, InputEvent, KeyboardKeyEvent, PointerMotionEvent, PointerButtonEvent, KeyState, ButtonState};
-#[cfg(feature = "winit")]
 use crate::backend::winit::init_winit_graphics;
-
-smithay::backend::renderer::element::render_elements! {
-    pub CustomRenderElement<=GlowRenderer>;
-    Surface=WaylandSurfaceRenderElement<GlowRenderer>,
-    Solid=SolidColorRenderElement,
-    Egui=TextureRenderElement<GlesTexture>,
-}
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt().init();
@@ -53,16 +42,16 @@ fn main() -> Result<()> {
     let mut event_loop: EventLoop<FloraState> = EventLoop::try_new()?;
     let handle = event_loop.handle();
 
-    // 3. Setup Wayland Display
+    // 2. Setup Wayland Display
     let mut display_raw = Display::new()?;
     let poll_fd = display_raw.backend().poll_fd().as_raw_fd();
     let dh = display_raw.handle();
     let display = Rc::new(RefCell::new(display_raw));
 
-    // 4. Initialize State
+    // 3. Initialize State
     let mut state = FloraState::new(&dh);
     
-    // 5. Setup Wayland Socket
+    // 4. Setup Wayland Socket
     let source = smithay::wayland::socket::ListeningSocketSource::new_auto()?;
     state.socket_name = source.socket_name().to_os_string();
     info!("Flora active! Socket Name: {:?}", state.socket_name);
@@ -76,7 +65,7 @@ fn main() -> Result<()> {
         let _ = dh.insert_client(client_stream, Arc::new(client_data));
     }).map_err(|_| anyhow::anyhow!("Failed to insert socket source"))?;
 
-    // 6. Setup Display Event Source
+    // 5. Setup Display Event Source
     let display_event_clone = display.clone();
     handle.insert_source(
         Generic::new(unsafe { BorrowedFd::borrow_raw(poll_fd) }, Interest::READ, Mode::Level),
@@ -88,51 +77,18 @@ fn main() -> Result<()> {
         }
     ).map_err(|_| anyhow::anyhow!("Failed to insert display event source"))?;
 
-    // 7. Setup Udev Backend
-    let udev = UdevBackend::new("seat0")?;
-    for (_device_id, dev_path) in udev.device_list() {
-        if dev_path.to_string_lossy().contains("card") || dev_path.to_string_lossy().contains("render") {
-            state.drm_devices.push(dev_path.to_path_buf());
-        }
-    }
-    handle.insert_source(udev, |event, _, state| {
-        if let UdevEvent::Added { path, .. } = event {
-            if path.to_string_lossy().contains("card") || path.to_string_lossy().contains("render") {
-                state.drm_devices.push(path);
-            }
-        }
-    }).map_err(|_| anyhow::anyhow!("Failed to insert udev source"))?;
-
-    // 8. Main Loop
-    let mut input_initialized = false;
-    let (input_sender, input_receiver) = smithay::reexports::calloop::channel::channel::<FloraInputEvent>();
-
-    let display_input_clone = display.clone();
-    handle.insert_source(input_receiver, move |event, _, state| {
-        if let Event::Msg(input_event) = event {
-            handle_input_event(state, input_event);
-            let _ = display_input_clone.borrow_mut().flush_clients();
-        }
-    }).expect("Failed to insert input source");
-
-    info!("Flora: Entering main event loop...");
-    
-    // Check if we should use Winit (nested) or DRM (native)
-    #[cfg(feature = "winit")]
-    let use_winit = std::env::var("WAYLAND_DISPLAY").is_ok() || std::env::var("DISPLAY").is_ok();
+    // 6. Backend Initialization
+    #[allow(unused_mut)]
+    let mut use_winit = true;
     #[cfg(not(feature = "winit"))]
-    let use_winit = false;
-    
-    let mut tty_file: Option<std::fs::File> = None;
-    
-    #[cfg(feature = "winit")]
+    { use_winit = false; }
+
     if use_winit {
+        #[cfg(feature = "winit")]
         match init_winit_graphics() {
             Ok((backend, winit_event_loop, output)) => {
-                // Advertise the output
                 output.create_global::<FloraState>(&state.display_handle);
                 state.output = Some(output.clone());
-                
                 state.backend_data = BackendData::Winit { 
                     backend,
                     damage_tracker: smithay::backend::renderer::damage::OutputDamageTracker::from_output(&output),
@@ -140,11 +96,9 @@ fn main() -> Result<()> {
                 state.needs_redraw = true;
                 info!("Winit (Nested) initialized successfully!");
 
-                // Insert winit event loop into calloop
                 handle.insert_source(winit_event_loop, |event, _, state| {
                     match event {
                         WinitEvent::Resized { size, .. } => {
-                            info!("Winit Resized: {:?}", size);
                             if let Some(output) = state.output.as_ref() {
                                 let mode = smithay::output::Mode { size, refresh: 60_000 };
                                 output.change_current_state(Some(mode), None, None, None);
@@ -152,22 +106,22 @@ fn main() -> Result<()> {
                             state.needs_redraw = true;
                         }
                         WinitEvent::Input(input_event) => {
-                            let scale = get_output_scale(state);
                             match input_event {
-                                InputEvent::Keyboard { event } => {
+                                smithay::backend::input::InputEvent::Keyboard { event } => {
                                     handle_input_event(state, FloraInputEvent::Keyboard { 
                                         keycode: KeyboardKeyEvent::<WinitInput>::key_code(&event).into(), 
                                         pressed: KeyboardKeyEvent::<WinitInput>::state(&event) == KeyState::Pressed, 
                                         time: InputEventTrait::<WinitInput>::time(&event) as u32 
                                     });
                                 }
-                                InputEvent::PointerMotion { event } => {
+                                smithay::backend::input::InputEvent::PointerMotion { event } => {
+                                    let scale = crate::compositor::render::get_output_scale(state);
                                     handle_input_event(state, FloraInputEvent::PointerMotion { 
                                         delta: PointerMotionEvent::<WinitInput>::delta(&event).to_physical(scale), 
                                         time: InputEventTrait::<WinitInput>::time(&event) as u32 
                                     });
                                 }
-                                InputEvent::PointerButton { event } => {
+                                smithay::backend::input::InputEvent::PointerButton { event } => {
                                     handle_input_event(state, FloraInputEvent::PointerButton { 
                                         button: PointerButtonEvent::<WinitInput>::button_code(&event), 
                                         pressed: PointerButtonEvent::<WinitInput>::state(&event) == ButtonState::Pressed, 
@@ -178,26 +132,13 @@ fn main() -> Result<()> {
                             }
                             state.needs_redraw = true;
                         }
-                        WinitEvent::Redraw => {
-                            state.needs_redraw = true;
-                        }
-                        WinitEvent::CloseRequested => {
-                            state.should_stop = true;
-                        }
+                        WinitEvent::Redraw => { state.needs_redraw = true; }
+                        WinitEvent::CloseRequested => { state.should_stop = true; }
                         WinitEvent::Focus(gained) => {
-                            // When window gains focus, release all pressed keys to clear
-                            // any modifier state inherited from parent compositor
                             if gained {
                                 if let Some(keyboard) = state.seat.get_keyboard() {
                                     for keycode in keyboard.pressed_keys() {
-                                        keyboard.input::<(), _>(
-                                            state,
-                                            keycode,
-                                            smithay::backend::input::KeyState::Released,
-                                            SERIAL_COUNTER.next_serial(),
-                                            0,
-                                            |_, _, _| FilterResult::Forward,
-                                        );
+                                        keyboard.input::<(), _>(state, keycode, smithay::backend::input::KeyState::Released, SERIAL_COUNTER.next_serial(), 0, |_, _, _| smithay::input::keyboard::FilterResult::Forward);
                                     }
                                 }
                             }
@@ -205,15 +146,13 @@ fn main() -> Result<()> {
                     }
                 }).expect("Failed to insert Winit event loop");
             }
-            Err(e) => {
-                error!("Failed to initialize Winit backend: {}", e);
-            }
+            Err(e) => { error!("Failed to initialize Winit backend: {}", e); }
         }
     }
     
     if !use_winit {
-        // DRM setup
-        tty_file = setup_tty_graphics()?;
+        // DRM / Udev setup
+        let _tty_file = setup_tty_graphics()?;
         let udev = UdevBackend::new("seat0")?;
         for (_device_id, dev_path) in udev.device_list() {
             if dev_path.to_string_lossy().contains("card") || dev_path.to_string_lossy().contains("render") {
@@ -221,17 +160,70 @@ fn main() -> Result<()> {
             }
         }
         handle.insert_source(udev, |event, _, state| {
-            if let UdevEvent::Added { path, .. } = event {
-                if path.to_string_lossy().contains("card") || path.to_string_lossy().contains("render") {
-                    state.drm_devices.push(path);
+            match event {
+                UdevEvent::Added { path, .. } => {
+                    if path.to_string_lossy().contains("card") || path.to_string_lossy().contains("render") {
+                        state.drm_devices.push(path);
+                    }
                 }
+                _ => {}
             }
         }).map_err(|_| anyhow::anyhow!("Failed to insert udev source"))?;
+        
+        // Setup Libinput as a Fallback Input Source
+        let mut libinput_context = Libinput::new_from_path(crate::input::libinput::FloraLibinputInterface);
+        if let Ok(entries) = std::fs::read_dir("/dev/input/") {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with("event") {
+                    let path = format!("/dev/input/{}", name);
+                    libinput_context.path_add_device(&path);
+                }
+            }
+        }
+        
+        let libinput = LibinputInputBackend::new(libinput_context);
+        
+        handle.insert_source(libinput, |event, _, state| {
+            use smithay::backend::input::InputEvent;
+            let scale = crate::compositor::render::get_output_scale(state);
+            match event {
+                InputEvent::DeviceAdded { device } => {
+                    info!("Libinput Device Added: {:?}", device.name());
+                }
+                InputEvent::Keyboard { event } => {
+                    handle_input_event(state, FloraInputEvent::Keyboard { 
+                        keycode: event.key_code().into(), 
+                        pressed: event.state() == KeyState::Pressed, 
+                        time: InputEventTrait::time(&event) as u32 
+                    });
+                }
+                InputEvent::PointerMotion { event } => {
+                    handle_input_event(state, FloraInputEvent::PointerMotion { 
+                        delta: event.delta().to_physical(scale), 
+                        time: InputEventTrait::time(&event) as u32 
+                    });
+                }
+                InputEvent::PointerMotionAbsolute { event } => {
+                    handle_input_event(state, FloraInputEvent::PointerMotionAbsolute { 
+                        location: (event.x_transformed(1), event.y_transformed(1)).into(), 
+                        time: InputEventTrait::time(&event) as u32 
+                    });
+                }
+                InputEvent::PointerButton { event } => {
+                    handle_input_event(state, FloraInputEvent::PointerButton { 
+                        button: event.button_code(), 
+                        pressed: event.state() == ButtonState::Pressed, 
+                        time: InputEventTrait::time(&event) as u32 
+                    });
+                }
+                _ => {}
+            }
+        }).expect("Failed to insert libinput source");
     }
 
-
+    // 7. Main Loop
     while !state.should_stop {
-        // A. DRM Graphics Initialization (if using DRM and not yet initialized)
         if !use_winit && state.renderer.is_none() && !state.drm_devices.is_empty() {
             let device_path = state.drm_devices.pop().unwrap();
             match init_drm_graphics(&device_path) {
@@ -242,44 +234,29 @@ fn main() -> Result<()> {
                             DrmEvent::Error(err) => error!("DRM Event Error: {:?}", err),
                         }
                     }).expect("Failed to insert DRM notifier");
-
                     state.renderer = Some(renderer);
-                    
-                    // Advertise the output to clients
+                    state.output = Some(output.clone());
                     output.create_global::<FloraState>(&state.display_handle);
-                    state.output = Some(output);
-                    
                     state.backend_data = BackendData::Drm { gbm, egl, compositor, device: drm_device };
                     state.needs_redraw = true;
-                    info!("DRM (Native) initialized successfully!");
-
-                    if !input_initialized {
-                        spawn_input_thread(input_sender.clone());
-                        input_initialized = true;
-                    }
+                    info!("DRM Backend initialized successfully!");
                 }
-                Err(e) => {
-                    error!("Failed to initialize graphics for {:?}: {}", device_path, e);
-                }
+                Err(e) => { error!("Failed to initialize DRM backend: {}", e); }
             }
         }
 
-        // B. Dispatch Events
         if let Err(e) = event_loop.dispatch(Duration::from_millis(16), &mut state) {
             error!("Event loop error: {:?}", e);
             break;
         }
 
-        // C. Rendering
         if state.needs_redraw {
-            render_frame(&mut state, &display)?;
+            let _ = render_frame(&mut state, &display);
             state.needs_redraw = false;
         }
     }
 
-    // 9. Shutdown & Cleanup
     info!("Flora: Shutting down...");
-    restore_tty(tty_file);
     Ok(())
 }
 
@@ -299,434 +276,4 @@ fn setup_tty_graphics() -> Result<Option<std::fs::File>> {
     }
     warn!("Flora: Could not switch TTY to graphics mode. Continuing anyway.");
     Ok(None)
-}
-
-fn restore_tty(tty_file: Option<std::fs::File>) {
-    if let Some(file) = tty_file {
-        unsafe {
-            let fd = file.as_raw_fd();
-            const KDSETMODE: libc::c_ulong = 0x4B3A;
-            const KD_TEXT: libc::c_ulong = 0x00;
-            if libc::ioctl(fd, KDSETMODE, KD_TEXT) == 0 {
-                info!("Flora: TTY restored to Text mode.");
-            } else {
-                warn!("Flora: Failed to restore TTY text mode.");
-            }
-        }
-    }
-}
-
-fn handle_input_event(state: &mut FloraState, event: FloraInputEvent) {
-    let scale = get_output_scale(state);
-    match event {
-        FloraInputEvent::Keyboard { keycode, pressed, time } => {
-            let serial = SERIAL_COUNTER.next_serial();
-            let state_enum = if pressed { smithay::backend::input::KeyState::Pressed } else { smithay::backend::input::KeyState::Released };
-            if let Some(keyboard) = state.seat.get_keyboard() {
-                // Smithay expects evdev keycodes and handles XKB offset internally
-                keyboard.input::<(), _>(state, keycode.into(), state_enum, serial, time, |_, _, _| FilterResult::Forward);
-            }
-            state.needs_redraw = true;
-        }
-        FloraInputEvent::PointerMotion { delta, time } => {
-            state.pointer_location += delta;
-            clamp_pointer(state);
-            forward_pointer_to_egui(state, scale);
-            update_grab(state);
-            forward_pointer_motion(state, time, scale);
-            state.needs_redraw = true;
-        }
-        FloraInputEvent::PointerMotionAbsolute { location, time } => {
-            if let Some(output) = state.output.as_ref() {
-                if let Some(mode) = output.current_mode() {
-                    let size = mode.size;
-                    state.pointer_location.x = location.x * size.w as f64;
-                    state.pointer_location.y = location.y * size.h as f64;
-                }
-            }
-            
-            forward_pointer_to_egui(state, scale);
-            update_grab(state);
-            forward_pointer_motion(state, time, scale);
-            state.needs_redraw = true;
-        }
-        FloraInputEvent::PointerButton { button, pressed, time } => {
-            handle_pointer_button(state, button, pressed, time, scale);
-            state.needs_redraw = true;
-        }
-    }
-}
-
-fn forward_pointer_to_egui(state: &mut FloraState, scale: f64) {
-    let p = state.pointer_location.to_logical(scale);
-    state.egui_state.handle_pointer_motion((p.x as i32, p.y as i32).into());
-}
-
-fn get_output_scale(state: &FloraState) -> f64 {
-    state.output.as_ref()
-        .map(|o| o.current_scale().fractional_scale())
-        .unwrap_or(1.0)
-}
-
-/// Hit region for window hit-testing
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum HitRegion {
-    TitleBar,
-    Client { local_x: i32, local_y: i32 },
-    None,
-}
-
-/// Shared hit-test logic for a single window operating in logical space
-fn hit_test_window(
-    pointer_logical: Point<f64, Logical>, 
-    window_location_logical: Point<f64, Logical>, 
-    surface_size: smithay::utils::Size<i32, Logical>
-) -> HitRegion {
-    let relative_x = pointer_logical.x - window_location_logical.x;
-    let relative_y = pointer_logical.y - window_location_logical.y;
-    
-    if relative_x >= 0.0 && relative_x < surface_size.w as f64 {
-        if relative_y >= 0.0 && relative_y < TITLE_BAR_HEIGHT as f64 {
-            HitRegion::TitleBar
-        } else if relative_y >= TITLE_BAR_HEIGHT as f64 && relative_y < (TITLE_BAR_HEIGHT + surface_size.h) as f64 {
-            HitRegion::Client { 
-                local_x: relative_x.round() as i32, 
-                local_y: (relative_y - TITLE_BAR_HEIGHT as f64).round() as i32 
-            }
-        } else {
-            HitRegion::None
-        }
-    } else {
-        HitRegion::None
-    }
-}
-
-fn clamp_pointer(state: &mut FloraState) {
-    if let Some(output) = state.output.as_ref() {
-        if let Some(mode) = output.current_mode() {
-            let size = mode.size;
-            state.pointer_location.x = state.pointer_location.x.max(0.0).min(size.w as f64);
-            state.pointer_location.y = state.pointer_location.y.max(0.0).min(size.h as f64);
-        }
-    }
-}
-
-fn update_grab(state: &mut FloraState) {
-    if let Some((idx, offset)) = state.grab_state {
-        if let Some(window) = state.windows.get_mut(idx) {
-            window.location = Point::<i32, Physical>::from((
-                (state.pointer_location.x - offset.x).round() as i32,
-                (state.pointer_location.y - offset.y).round() as i32
-            ));
-        }
-    }
-}
-
-fn forward_pointer_motion(state: &mut FloraState, time: u32, scale: f64) {
-    let serial = SERIAL_COUNTER.next_serial();
-    let pointer_logical = state.pointer_location.to_logical(scale);
-
-    if let Some(pointer) = state.seat.get_pointer() {
-        let under = state.windows.iter().rev().find_map(|w| {
-            let surface_size = w.toplevel.current_state().size.unwrap_or((800, 600).into());
-            let window_location_logical = Point::<f64, Logical>::from((w.location.x as f64 / scale, w.location.y as f64 / scale));
-            
-            match hit_test_window(pointer_logical, window_location_logical, surface_size) {
-                HitRegion::Client { local_x, local_y } => {
-                    Some((w.toplevel.wl_surface().clone(), Point::<f64, Logical>::from((local_x as f64, local_y as f64))))
-                }
-                _ => None
-            }
-        });
-
-        pointer.motion(state, under, &smithay::input::pointer::MotionEvent {
-            location: pointer_logical,
-            serial, time,
-        });
-    }
-}
-
-fn handle_pointer_button(state: &mut FloraState, button: u32, pressed: bool, time: u32, scale: f64) {
-    let serial = SERIAL_COUNTER.next_serial();
-    let state_enum = if pressed { smithay::backend::input::ButtonState::Pressed } else { smithay::backend::input::ButtonState::Released };
-    
-    // Forward to egui only for known buttons
-    let mb = match button {
-        0x110 => Some(smithay::backend::input::MouseButton::Left),
-        0x111 => Some(smithay::backend::input::MouseButton::Right),
-        0x112 => Some(smithay::backend::input::MouseButton::Middle),
-        _ => None,
-    };
-    
-    if let Some(mouse_button) = mb {
-        state.egui_state.handle_pointer_button(mouse_button, pressed);
-    }
-    
-    // Intercept if egui wants it
-    if state.egui_state.wants_pointer() {
-        state.needs_redraw = true;
-        return;
-    }
-    
-    if pressed {
-        let pointer_logical = state.pointer_location.to_logical(scale);
-        // Use shared hit-test helper
-        let hit = state.windows.iter().enumerate().rev().find_map(|(i, w)| {
-            let surface_size = w.toplevel.current_state().size.unwrap_or((800, 600).into());
-            let window_location_logical = Point::<f64, Logical>::from((w.location.x as f64 / scale, w.location.y as f64 / scale));
-            
-            let region = hit_test_window(pointer_logical, window_location_logical, surface_size);
-            if region != HitRegion::None {
-                // Return offset in physical space for grabbing
-                let w_loc_phys = Point::<f64, Physical>::from((w.location.x as f64, w.location.y as f64));
-                Some((i, state.pointer_location - w_loc_phys, region))
-            } else {
-                None
-            }
-        });
-
-        if let Some((idx, offset, region)) = hit {
-            let surface = state.windows[idx].toplevel.wl_surface().clone();
-            if let Some(keyboard) = state.seat.get_keyboard() {
-                keyboard.set_focus(state, Some(surface), serial);
-            }
-            
-            // Bring window to front
-            let win = state.windows.remove(idx);
-            state.windows.push(win);
-            
-            // Start grab if title bar was clicked
-            if region == HitRegion::TitleBar {
-                state.grab_state = Some((state.windows.len() - 1, offset));
-            }
-        }
-
-    } else {
-        state.grab_state = None;
-    }
-
-    if let Some(pointer) = state.seat.get_pointer() {
-        pointer.button(state, &smithay::input::pointer::ButtonEvent {
-            button, state: state_enum, serial, time,
-        });
-    }
-}
-
-fn render_frame(state: &mut FloraState, display: &Rc<RefCell<Display<FloraState>>>) -> Result<()> {
-    let scale = get_output_scale(state);
-    
-    // 1. Get output size
-    let output_size = match &state.backend_data {
-        BackendData::Drm { .. } => {
-            state.output.as_ref()
-                .and_then(|o| o.current_mode())
-                .map(|m| m.size)
-                .unwrap_or((1280, 800).into())
-        }
-        #[cfg(feature = "winit")]
-        BackendData::Winit { backend, .. } => {
-            backend.window_size()
-        }
-        BackendData::None => return Ok(()),
-    };
-
-    let color = [0.1, 0.1, 0.1, 1.0];
-
-    // 2. Collect immutable window data for egui
-    let focused_surface = state.seat.get_keyboard().and_then(|kb| kb.current_focus());
-    let window_data: Vec<(usize, Point<i32, Physical>, Size<i32, Physical>, bool, smithay::backend::renderer::element::Id)> = state.windows.iter().enumerate().map(|(idx, w)| {
-        let surface_size = w.toplevel.current_state().size.unwrap_or((800, 600).into());
-        let surface_size_physical = Size::from((surface_size.w as i32, surface_size.h as i32));
-        let is_focused = focused_surface.as_ref().map(|f| f == w.toplevel.wl_surface()).unwrap_or(false);
-        (idx, w.location, surface_size_physical, is_focused, w.bar_id.clone())
-    }).collect();
-
-    // 3. Render to backend
-    match &mut state.backend_data {
-        BackendData::Drm { compositor, .. } => {
-            let mut renderer = state.renderer.as_mut().ok_or_else(|| anyhow::anyhow!("No renderer"))?;
-            
-            let (elements, pending_close) = gather_elements(
-                &mut state.egui_state, 
-                &state.windows, 
-                &window_data[..],
-                &mut renderer, 
-                output_size, 
-                scale
-            )?;
-
-            if let Some(idx) = pending_close {
-                state.windows[idx].toplevel.send_close();
-            }
-
-            if let Err(e) = compositor.render_frame::<GlowRenderer, CustomRenderElement>(&mut renderer, &elements, color, smithay::backend::drm::compositor::FrameFlags::empty()) {
-                if format!("{:?}", e) != "EmptyFrame" {
-                    error!("Rendering: render_frame failed: {:?}", e);
-                }
-            }
-            if let Err(e) = compositor.commit_frame() {
-                if format!("{:?}", e) != "EmptyFrame" {
-                    error!("Rendering: commit_frame failed: {:?}", e);
-                }
-            }
-        }
-        #[cfg(feature = "winit")]
-        BackendData::Winit { backend, damage_tracker } => {
-            let buffer_age = backend.buffer_age().unwrap_or(0);
-            
-            let res = (|| -> Result<(Vec<CustomRenderElement>, Option<usize>)> {
-                let (renderer, mut framebuffer) = backend.bind().map_err(|e| anyhow::anyhow!("Bind failed: {}", e))?;
-                
-                let (elements, pending_close) = gather_elements(
-                    &mut state.egui_state, 
-                    &state.windows, 
-                    &window_data[..],
-                    renderer, 
-                    output_size, 
-                    scale
-                )?;
-
-                if pending_close.is_none() {
-                    damage_tracker.render_output(
-                        renderer,
-                        &mut framebuffer,
-                        buffer_age,
-                        &elements,
-                        color,
-                    ).map_err(|e| anyhow::anyhow!("Winit render failed: {}", e))?;
-                }
-                
-                Ok((elements, pending_close))
-            })();
-            
-            match res {
-                Ok((_, pending_close_idx)) => {
-                    if let Some(idx) = pending_close_idx {
-                        state.windows[idx].toplevel.send_close();
-                    }
-                    if let Err(e) = backend.submit(None) {
-                        error!("Winit Submit Error: {:?}", e);
-                    }
-                }
-                Err(e) => {
-                    error!("Winit Rendering Error: {:?}", e);
-                }
-            }
-        }
-        BackendData::None => {}
-    }
-    
-    // 6. Send frame callbacks
-    let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u32;
-    for window in &state.windows {
-        with_surface_tree_downward(window.toplevel.wl_surface(), (), |_, _, _| TraversalAction::DoChildren(()), |_, states, _| {
-            let mut guard = states.cached_state.get::<SurfaceAttributes>();
-            for callback in guard.current().frame_callbacks.drain(..) { 
-                let c: smithay::reexports::wayland_server::protocol::wl_callback::WlCallback = callback;
-                let _ = c.done(time); 
-            }
-        }, |_, _, _| true);
-    }
-
-    let _ = display.borrow_mut().flush_clients();
-    state.needs_redraw = false;
-    Ok(())
-}
-
-fn gather_elements(
-    egui_state: &mut EguiState,
-    windows: &[crate::state::Window],
-    window_data: &[(usize, Point<i32, Physical>, smithay::utils::Size<i32, Physical>, bool, smithay::backend::renderer::element::Id)],
-    renderer: &mut GlowRenderer,
-    output_size: smithay::utils::Size<i32, Physical>,
-    scale: f64,
-) -> Result<(Vec<CustomRenderElement>, Option<usize>)> {
-    let mut elements = Vec::new();
-    let mut pending_close = None;
-
-    let egui_element = egui_state.render(
-        |ctx| {
-            egui::Area::new(egui::Id::new("flora_ui"))
-                .fixed_pos(egui::pos2(0.0, 0.0))
-                .show(ctx, |ui| {
-                    // 1. Compositor Label (Top-left)
-                    ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
-                        ui.add_space(10.0);
-                        ui.label(egui::RichText::new("Flora Compositor").color(egui::Color32::from_gray(200)).size(14.0));
-                    });
-
-                    // 2. Window Title Bar Buttons
-                    for (idx, pos, _size, _is_focused, bar_id) in window_data {
-                        let btn_radius = 6.0;
-                        let spacing = 8.0;
-                        let start_x_offset = 12.0;
-                        let center_y_offset = (TITLE_BAR_HEIGHT as f32 / scale as f32) / 2.0;
-
-                        let logical_pos = egui::pos2(pos.x as f32 / scale as f32, pos.y as f32 / scale as f32);
-
-                        for i in 0..3 {
-                            let (color, hover_color) = match i {
-                                0 => (egui::Color32::from_rgb(255, 95, 87), egui::Color32::from_rgb(255, 120, 110)), // Red
-                                1 => (egui::Color32::from_rgb(255, 189, 46), egui::Color32::from_rgb(255, 210, 100)), // Yellow
-                                2 => (egui::Color32::from_rgb(40, 201, 64), egui::Color32::from_rgb(80, 230, 100)),  // Green
-                                _ => (egui::Color32::GRAY, egui::Color32::LIGHT_GRAY),
-                            };
-                            
-                            let center = egui::pos2(
-                                logical_pos.x + start_x_offset + i as f32 * (btn_radius * 2.0 + spacing),
-                                logical_pos.y + center_y_offset
-                            );
-
-                            let interaction_id = egui::Id::new(("btn", bar_id, i));
-                            let rect = egui::Rect::from_center_size(center, egui::vec2(btn_radius * 2.2, btn_radius * 2.2));
-                            let response = ui.interact(rect, interaction_id, egui::Sense::click());
-                            
-                            let final_color = if response.hovered() { hover_color } else { color };
-                            ui.painter().circle_filled(center, btn_radius, final_color);
-
-                            if response.clicked() && i == 0 {
-                                info!("Flora: Closing window {}", idx);
-                                pending_close = Some(*idx);
-                            }
-                        }
-                    }
-                });
-        },
-        renderer,
-        Rectangle::new((0, 0).into(), (output_size.w, output_size.h).into()),
-        scale,
-        scale as f32,
-    );
-
-    // 1. Egui Overlay (Top-most in this compositor's order)
-    match egui_element {
-        Ok(egui_tex) => elements.push(CustomRenderElement::Egui(egui_tex)),
-        Err(err) => error!("Failed to render egui overlay: {:?}", err),
-    }
-
-    // 2. Gather window and title bar elements (Top-to-Bottom)
-    for window in windows.iter().rev() {
-        // B. Window Surface Tree (Drawn OVER the title bar background in each window stack)
-        let surface_location = Point::from((window.location.x, window.location.y + TITLE_BAR_HEIGHT));
-        elements.extend(render_elements_from_surface_tree::<GlowRenderer, CustomRenderElement>(
-            renderer, 
-            window.toplevel.wl_surface(), 
-            surface_location, 
-            1.0, 1.0, 
-            Kind::Unspecified
-        ));
-
-        // A. Title Bar Background (Drawn UNDER the surface)
-        let surface_size = window.toplevel.current_state().size.unwrap_or((800, 600).into());
-        let bar_rect = Rectangle::new(window.location, (surface_size.w, TITLE_BAR_HEIGHT).into());
-        elements.push(CustomRenderElement::Solid(SolidColorRenderElement::new(
-            window.bar_id.clone(),
-            bar_rect,
-            window.bar_commit_counter.clone(),
-            [0.15, 0.15, 0.15, 1.0],
-            Kind::Unspecified
-        )));
-    }
-
-    Ok((elements, pending_close))
 }
