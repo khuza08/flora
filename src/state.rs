@@ -70,7 +70,11 @@ pub struct FloraState {
 impl FloraState {
     pub fn new(display_handle: &DisplayHandle) -> Self {
         let mut seat_state = SeatState::new();
-        let seat = seat_state.new_wl_seat(display_handle, "seat0");
+        let mut seat = seat_state.new_wl_seat(display_handle, "seat0");
+        
+        // Add keyboard and pointer capabilities to the seat
+        seat.add_keyboard(Default::default(), 200, 25).expect("Failed to add keyboard to seat");
+        seat.add_pointer();
 
         Self {
             display_handle: display_handle.clone(),
@@ -83,6 +87,7 @@ impl FloraState {
             text_input_manager_state: TextInputManagerState::new::<Self>(display_handle),
             seat_state,
             seat,
+
             output: None,
             should_stop: false,
             drm_devices: Vec::new(),
