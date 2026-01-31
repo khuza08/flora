@@ -55,7 +55,8 @@ use smithay::{
     utils::SERIAL_COUNTER,
 };
 use tracing::{info, warn, error};
-use std::{time::Duration, sync::Arc, path::PathBuf, fs::OpenOptions};
+use std::{time::Duration, sync::Arc, path::PathBuf, fs::OpenOptions, os::unix::io::{AsRawFd, OwnedFd}};
+use libc;
 
 pub struct Window {
     pub toplevel: ToplevelSurface,
@@ -340,13 +341,20 @@ impl smithay::reexports::input::LibinputInterface for FloraLibinputInterface {
         
         match result {
             Ok(file) => {
-                info!("Libinput: Successfully opened {:?}", path);
-                Ok(file.into())
+                let fd: OwnedFd = file.into();
+                // Attempt exclusive grab to prevent TTY leakage
+                // EVIOCGRAB = _IOW('E', 0x90, int) -> 0x40044590
+                unsafe {
+                    const EVIOCGRAB: libc::c_ulong = 0x40044590;
+                    if libc::ioctl(fd.as_raw_fd(), EVIOCGRAB, 1) != 0 {
+                        warn!("Libinput: Failed to grab device {:?}. TTY leakage may occur. (Error: {})", path, std::io::Error::last_os_error());
+                    } else {
+                        info!("Libinput: Successfully grabbed device eksklusif {:?}", path);
+                    }
+                }
+                Ok(fd)
             }
-            Err(err) => {
-                warn!("Libinput: Failed to open {:?}: {:?}", path, err);
-                Err(err.raw_os_error().unwrap_or(1))
-            }
+            Err(e) => Err(e.raw_os_error().unwrap_or(libc::EIO)),
         }
     }
 
@@ -648,6 +656,7 @@ fn main() -> anyhow::Result<()> {
                         error!("Input Thread: Libinput dispatch error: {:?}", e);
                     }
                     for event in &mut libinput {
+                        // Broad logging for debugging missing events
                         match event {
                             LibinputEvent::Device(DeviceEvent::Added(d)) => {
                                 info!("Input Thread: Event: DeviceAdded({:?})", d.device().name());
