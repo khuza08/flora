@@ -441,30 +441,25 @@ fn main() -> anyhow::Result<()> {
         info!("Socket callback COMPLETED - returning from callback");
     }).map_err(|_e| anyhow::anyhow!("Failed to insert socket source"))?;
 
-    // 4b. Setup Display Event Source - DISABLED for debugging
-    // The dispatch_clients is already called in main loop, so this may be redundant
-    // and possibly conflicting with socket source
-    // use smithay::reexports::calloop::generic::Generic;
-    // 
-    // let display_clone = display.clone();
-    // handle.insert_source(
-    //     Generic::new(poll_fd, Interest::READ, Mode::Level),
-    //     move |_event, _metadata, state| {
-    //         info!("Display poll_fd readable - processing client messages");
-    //         if let Ok(mut disp) = display_clone.try_borrow_mut() {
-    //             if let Err(e) = disp.dispatch_clients(state) {
-    //                 error!("Display source: dispatch_clients error: {:?}", e);
-    //             }
-    //             if let Err(e) = disp.flush_clients() {
-    //                 error!("Display source: flush_clients error: {:?}", e);
-    //             }
-    //         } else {
-    //             warn!("Display source: Could not borrow display");
-    //         }
-    //         Ok(PostAction::Continue)
-    //     }
-    // ).map_err(|_e| anyhow::anyhow!("Failed to insert display event source"))?;
-    let _ = poll_fd; // silence unused warning
+    // 4b. Setup Display Event Source
+    // This source monitors the Wayland display's poll_fd and dispatches client requests
+    // when they arrive. This is critical for responsiveness.
+    use smithay::reexports::calloop::generic::Generic;
+    use smithay::reexports::calloop::{Interest, Mode, PostAction};
+    
+    let display_clone = display.clone();
+    handle.insert_source(
+        Generic::new(poll_fd, Interest::READ, Mode::Level),
+        move |_event, _metadata, state| {
+            if let Ok(mut disp) = display_clone.try_borrow_mut() {
+                if let Err(e) = disp.dispatch_clients(state) {
+                    error!("Display source: dispatch_clients error: {:?}", e);
+                }
+                let _ = disp.flush_clients();
+            }
+            Ok(PostAction::Continue)
+        }
+    ).map_err(|_e| anyhow::anyhow!("Failed to insert display event source"))?;
 
     // 5. Initialize Udev Backend (to detect displays in VM)
     let udev = UdevBackend::new("seat0")?;
@@ -558,6 +553,7 @@ fn main() -> anyhow::Result<()> {
             // Zero-Latency Input: Insert receiver as a calloop source
             handle.insert_source(input_receiver, |event, _, state| {
                 if let smithay::reexports::calloop::channel::Event::Msg(input_event) = event {
+                    info!("Main Loop: Input event triggered from channel");
                     match input_event {
                         FloraInputEvent::Keyboard { keycode, pressed, time } => {
                             info!("🎹 Keyboard event received! Key={} Pressed={}", keycode, pressed);
@@ -719,9 +715,11 @@ fn main() -> anyhow::Result<()> {
                     for window in &state.windows {
                         elements.extend(render_elements_from_surface_tree(renderer, window.toplevel.wl_surface(), window.location, 1.0, 1.0, Kind::Unspecified));
                     }
+                    
+                    // Render the frame
                     let _ = compositor.render_frame::<GlowRenderer, WaylandSurfaceRenderElement<GlowRenderer>>(renderer, &elements, color, smithay::backend::drm::compositor::FrameFlags::empty());
-                    let _ = compositor.commit_frame();
-
+                    
+                    // IMPORTANT: Process frame callbacks BEFORE commit_frame or right after to ensure clients know we finished a frame
                     let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u32;
                     for window in &state.windows {
                         with_surface_tree_downward(window.toplevel.wl_surface(), (), |_, _, _| TraversalAction::DoChildren(()), |_, states, _| {
@@ -729,6 +727,9 @@ fn main() -> anyhow::Result<()> {
                             for callback in guard.current().frame_callbacks.drain(..) { callback.done(time); }
                         }, |_, _, _| true);
                     }
+
+                    // Commit to GPU
+                    let _ = compositor.commit_frame();
                 }
             }
             state.needs_redraw = false;
