@@ -12,9 +12,22 @@ Flora is in early development but already supports:
 - **Clean Diagnostics**: Intelligent log suppression for non-critical setup errors.
 
 ## Running Flora
-Requires root privileges for DRM access:
+
+Flora supports two backends for different workflows:
+
+### 🖥️ Development Mode (Winit/Nested)
+Runs as a window inside your current Wayland or X11 compositor (e.g., Hyprland, GNOME). **No root required.**
+
 ```bash
-sudo -E ./target/debug/flora
+cargo run
+```
+
+### 🎮 Production Mode (DRM/Native)
+Runs natively from a TTY. Requires switching to a console (e.g., `Ctrl+Alt+F3`) and root privileges for DRM/input access.
+
+```bash
+# Using sudo to allow access to /dev/dri and /dev/input
+sudo -E cargo run --no-default-features
 ```
 
 ## Vision
