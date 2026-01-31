@@ -656,6 +656,8 @@ fn main() -> anyhow::Result<()> {
                             state.pointer_location.x = location.x * 1280.0;
                             state.pointer_location.y = location.y * 800.0;
                             
+                            info!("🖱️ Absolute Pointer: location={:?} (scaled to {:?})", location, state.pointer_location);
+
                             if let Some((idx, offset)) = state.grab_state {
                                 if let Some(window) = state.windows.get_mut(idx) {
                                     window.location = Point::<i32, Physical>::from((
@@ -821,7 +823,9 @@ fn main() -> anyhow::Result<()> {
 
                     // Commit to GPU
                     if let Err(e) = compositor.commit_frame() {
-                        error!("Rendering: commit_frame failed: {:?}", e);
+                        if format!("{:?}", e) != "EmptyFrame" {
+                            error!("Rendering: commit_frame failed: {:?}", e);
+                        }
                     }
 
                     // Proactively flush after frame to ensure frame callbacks reach clients
