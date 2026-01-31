@@ -2,6 +2,7 @@ pub mod state;
 mod input;
 mod backend;
 
+use smithay_egui::EguiState;
 use smithay::{
     backend::{
         udev::{UdevBackend, UdevEvent},
@@ -413,54 +414,34 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
         let egui_element = state.egui_state.render(
             |ctx| {
                 egui::CentralPanel::default()
-                    .frame(egui::Frame::NONE)
+                    .frame(egui::Frame::NONE.fill(egui::Color32::from_black_alpha(200))) // Massive dark tint
                     .show(ctx, |ui| {
-                        // 1. CYAN CROSSHAIR at (200, 200)
-                        ui.painter().line_segment(
-                            [egui::pos2(180.0, 200.0), egui::pos2(220.0, 200.0)],
-                            egui::Stroke::new(2.0, egui::Color32::CYAN)
-                        );
-                        ui.painter().line_segment(
-                            [egui::pos2(200.0, 180.0), egui::pos2(200.0, 220.0)],
-                            egui::Stroke::new(2.0, egui::Color32::CYAN)
+                        // 1. WHITE OVERLAY across everything
+                        ui.painter().rect_filled(
+                            ui.max_rect(), 
+                            0.0, 
+                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 64) // 25% white wash
                         );
 
                         for (idx, window_pos, _surface_size, _is_focused) in &window_data {
                             let win_x = window_pos.x as f32;
                             let win_y = window_pos.y as f32;
 
-                            // 2. DEBUG TEXT (Always visible)
+                            // 2. BIG BOLD TEXT
                             ui.painter().text(
-                                egui::pos2(120.0, 80.0 + (*idx as f32 * 40.0)),
+                                egui::pos2(win_x + 50.0, win_y - 20.0),
                                 egui::Align2::LEFT_TOP,
-                                format!("Win{} at ({:.1}, {:.1})", idx, win_x, win_y),
-                                egui::FontId::proportional(24.0),
-                                egui::Color32::WHITE
+                                "RENDER TEST",
+                                egui::FontId::proportional(30.0),
+                                egui::Color32::YELLOW
                             );
 
-                            // 3. TARGET BOX (White box with Red inside) at (win_x, win_y)
-                            // This SHOULD cover the top-left corner of the window
+                            // 3. TARGET RECT
                             ui.painter().rect_filled(
-                                egui::Rect::from_min_size(egui::pos2(win_x, win_y), egui::vec2(40.0, 40.0)),
+                                egui::Rect::from_min_size(egui::pos2(win_x, win_y), egui::vec2(100.0, 20.0)),
                                 0.0,
                                 egui::Color32::WHITE
                             );
-                            ui.painter().rect_filled(
-                                egui::Rect::from_min_size(egui::pos2(win_x + 5.0, win_y + 5.0), egui::vec2(30.0, 30.0)),
-                                0.0,
-                                egui::Color32::RED
-                            );
-
-                            // 4. TRAFFIC LIGHTS (Aggressive White Dots)
-                            for i in 0..3 {
-                                let center_x = win_x + 20.0 + (i as f32 * 30.0);
-                                let center_y = win_y + 15.0;
-                                ui.painter().circle_filled(
-                                    egui::pos2(center_x, center_y),
-                                    10.0,
-                                    egui::Color32::WHITE
-                                );
-                            }
                         }
                     });
             },
