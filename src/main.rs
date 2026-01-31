@@ -413,57 +413,65 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
         let egui_element = state.egui_state.render(
             |ctx| {
                 egui::CentralPanel::default()
-                    .frame(egui::Frame::none())
+                    .frame(egui::Frame::NONE)
                     .show(ctx, |ui| {
-                        // 1. RED TINT (Verification that egui layer is visible)
+                        // 1. RED TINT (Verification)
                         ui.painter().rect_filled(
                             ui.max_rect(), 
                             0.0, 
                             egui::Color32::from_rgba_unmultiplied(255, 0, 0, 32)
                         );
 
-                        for (idx, window_pos, _surface_size, is_focused) in &window_data {
+                        // 2. YELLOW SQUARE at (50, 50) - Should be inside the purple square
+                        ui.painter().rect_filled(
+                            egui::Rect::from_min_size(egui::pos2(50.0, 50.0), egui::vec2(20.0, 20.0)),
+                            0.0,
+                            egui::Color32::YELLOW
+                        );
+
+                        // 3. DEBUG TEXT
+                        ui.painter().text(
+                            egui::pos2(100.0, 50.0),
+                            egui::Align2::LEFT_TOP,
+                            format!("Windows: {}", window_data.len()),
+                            egui::FontId::proportional(20.0),
+                            egui::Color32::WHITE
+                        );
+
+                        for (idx, window_pos, _surface_size, _is_focused) in &window_data {
                             let win_x = window_pos.x as f32;
                             let win_y = window_pos.y as f32;
 
-                            // 2. GREEN MARKER (Verification of window_pos)
-                            // Draw a small green square at the top-left of the title bar
+                            // 4. WHITE DEBUG CIRCLE (Big and obvious)
+                            ui.painter().circle_filled(
+                                egui::pos2(win_x + 20.0, win_y + 15.0),
+                                12.0,
+                                egui::Color32::WHITE
+                            );
+                            
+                            // 5. GREEN MARKER at (win_x, win_y)
                             ui.painter().rect_filled(
                                 egui::Rect::from_min_size(egui::pos2(win_x, win_y), egui::vec2(10.0, 10.0)),
                                 0.0,
                                 egui::Color32::GREEN
                             );
 
-                            // 3. BUTTONS
-                            let btn_radius = 8.0_f32; // Slightly larger for visibility
-                            let btn_spacing = 10.0_f32;
-                            let left_margin = 15.0_f32;
-                            let center_y = win_y + (TITLE_BAR_HEIGHT as f32 / 2.0);
-                            
-                            let colors = if *is_focused {
-                                [
-                                    egui::Color32::from_rgb(255, 95, 87),
-                                    egui::Color32::from_rgb(255, 189, 46),
-                                    egui::Color32::from_rgb(40, 200, 64),
-                                ]
-                            } else {
-                                [egui::Color32::from_rgb(100, 100, 100); 3]
-                            };
-                            
-                            for (i, btn_color) in colors.iter().enumerate() {
-                                let center_x = win_x + left_margin + btn_radius 
-                                    + (i as f32 * (btn_radius * 2.0 + btn_spacing));
-                                let center = egui::pos2(center_x, center_y);
+                            // Traffic light buttons (Simplified, always white for now)
+                            for i in 0..3 {
+                                let center_x = win_x + 15.0 + (i as f32 * 20.0);
+                                let center_y = win_y + 15.0;
+                                ui.painter().circle_filled(
+                                    egui::pos2(center_x, center_y),
+                                    6.0,
+                                    egui::Color32::WHITE
+                                );
                                 
-                                // Draw high-visibility circle
-                                ui.painter().circle_filled(center, btn_radius, *btn_color);
-                                
-                                // Allocate clickable area
-                                let btn_rect = egui::Rect::from_center_size(center, egui::vec2(20.0, 20.0));
-                                let response = ui.interact(btn_rect, egui::Id::new(format!("btn_{}_{}", idx, i)), egui::Sense::click());
-                                
-                                if response.clicked() && *is_focused && i == 0 {
-                                    pending_close = Some(*idx);
+                                if i == 0 {
+                                    let btn_rect = egui::Rect::from_center_size(egui::pos2(center_x, center_y), egui::vec2(14.0, 14.0));
+                                    let response = ui.interact(btn_rect, egui::Id::new(format!("btn_{}", idx)), egui::Sense::click());
+                                    if response.clicked() {
+                                        pending_close = Some(*idx);
+                                    }
                                 }
                             }
                         }
