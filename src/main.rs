@@ -2,7 +2,6 @@ pub mod state;
 mod input;
 mod backend;
 
-use smithay_egui::EguiState;
 use smithay::{
     backend::{
         udev::{UdevBackend, UdevEvent},
@@ -16,7 +15,7 @@ use smithay::{
         calloop::{EventLoop, Interest, Mode, PostAction, generic::Generic, channel::Event},
         wayland_server::Display,
     },
-    utils::{SERIAL_COUNTER, Point, Physical, Rectangle},
+    utils::{SERIAL_COUNTER, Point, Physical, Logical, Rectangle},
     wayland::{
         compositor::{with_surface_tree_downward, TraversalAction, SurfaceAttributes},
     },
@@ -204,6 +203,7 @@ fn restore_tty(tty_file: Option<std::fs::File>) {
 }
 
 fn handle_input_event(state: &mut FloraState, event: FloraInputEvent) {
+    let scale = get_output_scale(state);
     match event {
         FloraInputEvent::Keyboard { keycode, pressed, time } => {
             let serial = SERIAL_COUNTER.next_serial();
@@ -216,10 +216,9 @@ fn handle_input_event(state: &mut FloraState, event: FloraInputEvent) {
         FloraInputEvent::PointerMotion { delta, time } => {
             state.pointer_location += delta;
             clamp_pointer(state);
-            let scale = get_output_scale(state);
             forward_pointer_to_egui(state, scale);
             update_grab(state);
-            forward_pointer_motion(state, time);
+            forward_pointer_motion(state, time, scale);
             state.needs_redraw = true;
         }
         FloraInputEvent::PointerMotionAbsolute { location, time } => {
@@ -231,14 +230,13 @@ fn handle_input_event(state: &mut FloraState, event: FloraInputEvent) {
                 }
             }
             
-            let scale = get_output_scale(state);
             forward_pointer_to_egui(state, scale);
             update_grab(state);
-            forward_pointer_motion(state, time);
+            forward_pointer_motion(state, time, scale);
             state.needs_redraw = true;
         }
         FloraInputEvent::PointerButton { button, pressed, time } => {
-            handle_pointer_button(state, button, pressed, time);
+            handle_pointer_button(state, button, pressed, time, scale);
             state.needs_redraw = true;
         }
     }
@@ -263,18 +261,23 @@ enum HitRegion {
     None,
 }
 
-/// Shared hit-test logic for a single window
-fn hit_test_window(pointer: Point<f64, Physical>, window_location: Point<i32, Physical>, surface_size: smithay::utils::Size<i32, smithay::utils::Logical>) -> HitRegion {
-    let px = pointer.x.round() as i32;
-    let py = pointer.y.round() as i32;
-    let relative_x = px - window_location.x;
-    let relative_y = py - window_location.y;
+/// Shared hit-test logic for a single window operating in logical space
+fn hit_test_window(
+    pointer_logical: Point<f64, Logical>, 
+    window_location_logical: Point<f64, Logical>, 
+    surface_size: smithay::utils::Size<i32, Logical>
+) -> HitRegion {
+    let relative_x = pointer_logical.x - window_location_logical.x;
+    let relative_y = pointer_logical.y - window_location_logical.y;
     
-    if relative_x >= 0 && relative_x < surface_size.w {
-        if relative_y >= 0 && relative_y < TITLE_BAR_HEIGHT {
+    if relative_x >= 0.0 && relative_x < surface_size.w as f64 {
+        if relative_y >= 0.0 && relative_y < TITLE_BAR_HEIGHT as f64 {
             HitRegion::TitleBar
-        } else if relative_y >= TITLE_BAR_HEIGHT && relative_y < (TITLE_BAR_HEIGHT + surface_size.h) {
-            HitRegion::Client { local_x: relative_x, local_y: relative_y - TITLE_BAR_HEIGHT }
+        } else if relative_y >= TITLE_BAR_HEIGHT as f64 && relative_y < (TITLE_BAR_HEIGHT + surface_size.h) as f64 {
+            HitRegion::Client { 
+                local_x: relative_x.round() as i32, 
+                local_y: (relative_y - TITLE_BAR_HEIGHT as f64).round() as i32 
+            }
         } else {
             HitRegion::None
         }
@@ -304,29 +307,31 @@ fn update_grab(state: &mut FloraState) {
     }
 }
 
-fn forward_pointer_motion(state: &mut FloraState, time: u32) {
+fn forward_pointer_motion(state: &mut FloraState, time: u32, scale: f64) {
     let serial = SERIAL_COUNTER.next_serial();
-    let scale = get_output_scale(state);
-    
+    let pointer_logical = state.pointer_location.to_logical(scale);
+
     if let Some(pointer) = state.seat.get_pointer() {
         let under = state.windows.iter().rev().find_map(|w| {
             let surface_size = w.toplevel.current_state().size.unwrap_or((800, 600).into());
-            match hit_test_window(state.pointer_location, w.location, surface_size) {
+            let window_location_logical = Point::<f64, Logical>::from((w.location.x as f64 / scale, w.location.y as f64 / scale));
+            
+            match hit_test_window(pointer_logical, window_location_logical, surface_size) {
                 HitRegion::Client { local_x, local_y } => {
-                    Some((w.toplevel.wl_surface().clone(), Point::<f64, smithay::utils::Logical>::from((local_x as f64, local_y as f64))))
+                    Some((w.toplevel.wl_surface().clone(), Point::<f64, Logical>::from((local_x as f64, local_y as f64))))
                 }
                 _ => None
             }
         });
 
         pointer.motion(state, under, &smithay::input::pointer::MotionEvent {
-            location: state.pointer_location.to_logical(scale),
+            location: pointer_logical,
             serial, time,
         });
     }
 }
 
-fn handle_pointer_button(state: &mut FloraState, button: u32, pressed: bool, time: u32) {
+fn handle_pointer_button(state: &mut FloraState, button: u32, pressed: bool, time: u32, scale: f64) {
     let serial = SERIAL_COUNTER.next_serial();
     let state_enum = if pressed { smithay::backend::input::ButtonState::Pressed } else { smithay::backend::input::ButtonState::Released };
     
@@ -349,13 +354,17 @@ fn handle_pointer_button(state: &mut FloraState, button: u32, pressed: bool, tim
     }
     
     if pressed {
+        let pointer_logical = state.pointer_location.to_logical(scale);
         // Use shared hit-test helper
         let hit = state.windows.iter().enumerate().rev().find_map(|(i, w)| {
             let surface_size = w.toplevel.current_state().size.unwrap_or((800, 600).into());
-            let region = hit_test_window(state.pointer_location, w.location, surface_size);
+            let window_location_logical = Point::<f64, Logical>::from((w.location.x as f64 / scale, w.location.y as f64 / scale));
+            
+            let region = hit_test_window(pointer_logical, window_location_logical, surface_size);
             if region != HitRegion::None {
-                let w_loc_f = Point::<f64, Physical>::from((w.location.x as f64, w.location.y as f64));
-                Some((i, state.pointer_location - w_loc_f, region))
+                // Return offset in physical space for grabbing
+                let w_loc_phys = Point::<f64, Physical>::from((w.location.x as f64, w.location.y as f64));
+                Some((i, state.pointer_location - w_loc_phys, region))
             } else {
                 None
             }
@@ -406,7 +415,7 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
             let is_focused = state.seat.get_keyboard()
                 .map(|kb| kb.current_focus().map(|f| f == *w.toplevel.wl_surface()).unwrap_or(false))
                 .unwrap_or(false);
-            (idx, w.location, surface_size, is_focused)
+            (idx, w.location, surface_size, is_focused, w.bar_id.clone())
         }).collect();
         
         let mut pending_close: Option<usize> = None;
@@ -417,7 +426,7 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE)
                     .show(ctx, |ui| {
-                        for (idx, window_pos, _surface_size, is_focused) in &window_data {
+                        for (idx, window_pos, _surface_size, is_focused, bar_id) in &window_data {
                             let win_x = window_pos.x as f32;
                             let win_y = window_pos.y as f32;
 
@@ -467,7 +476,7 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
 
                                 // Click handling
                                 let rect = egui::Rect::from_center_size(center, egui::vec2(btn_radius * 2.0, btn_radius * 2.0));
-                                let response = ui.interact(rect, egui::Id::new(format!("btn_{}_{}", idx, i)), egui::Sense::click());
+                                let response = ui.interact(rect, egui::Id::new(("btn", bar_id, i)), egui::Sense::click());
                                 if response.clicked() && *is_focused && i == 0 {
                                     pending_close = Some(*idx);
                                 }
