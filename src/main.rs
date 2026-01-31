@@ -492,10 +492,16 @@ fn main() -> anyhow::Result<()> {
     handle.insert_source(
         Generic::new(poll_fd, Interest::READ, Mode::Level),
         move |_event, _metadata, state| {
+            info!("📡 Display event source TRIGGERED - dispatching clients");
             // Using borrow_mut because we are in the same thread and should be the only one dispatching
             let mut disp = display_clone.borrow_mut();
-            if let Err(e) = disp.dispatch_clients(state) {
-                error!("Display source: dispatch_clients error: {:?}", e);
+            match disp.dispatch_clients(state) {
+                Ok(count) => {
+                    info!("📡 Dispatched {} client events", count);
+                }
+                Err(e) => {
+                    error!("Display source: dispatch_clients error: {:?}", e);
+                }
             }
             let _ = disp.flush_clients();
             Ok(PostAction::Continue)
