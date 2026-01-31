@@ -35,7 +35,15 @@ impl ClientData for FloraClientData {}
 pub struct Window {
     pub toplevel: ToplevelSurface,
     pub location: Point<i32, Physical>,
+    pub title_bar_height: i32,
 }
+
+pub const TITLE_BAR_HEIGHT: i32 = 30;
+pub const BUTTON_SIZE: i32 = 12;
+pub const BUTTON_SPACING: i32 = 8;
+pub const MARGIN: i32 = 10;
+
+
 
 pub struct FloraState {
     pub display_handle: DisplayHandle,
@@ -116,6 +124,7 @@ impl SeatHandler for FloraState {
         
         // Update text input focus to track keyboard focus
         let text_input = self.seat.text_input();
+        text_input.set_focus(focused.cloned());
         if focused.is_some() {
             text_input.enter();
         } else {
@@ -149,7 +158,11 @@ impl XdgShellHandler for FloraState {
         });
         surface.send_configure();
         let wl_surface = surface.wl_surface().clone();
-        self.windows.push(Window { toplevel: surface, location: (100, 100).into() });
+        self.windows.push(Window { 
+            toplevel: surface, 
+            location: (100, 100).into(),
+            title_bar_height: TITLE_BAR_HEIGHT,
+        });
         if let Some(keyboard) = self.seat.get_keyboard() {
             keyboard.set_focus(self, Some(wl_surface.clone()), smithay::utils::SERIAL_COUNTER.next_serial());
         }

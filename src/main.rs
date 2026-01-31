@@ -7,7 +7,7 @@ use smithay::{
         udev::{UdevBackend, UdevEvent},
         renderer::{
             glow::GlowRenderer,
-            element::{Kind, surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement}},
+            element::{Kind, surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement}, solid::SolidColorRenderElement},
         },
         drm::DrmEvent,
     },
@@ -26,9 +26,15 @@ use std::{time::Duration, rc::Rc, cell::RefCell, os::unix::io::{AsRawFd, Borrowe
 use tracing::{info, warn, error};
 use anyhow::Result;
 
-use crate::state::{FloraState, FloraClientData, CompositorClientState};
+use crate::state::{FloraState, FloraClientData, CompositorClientState, TITLE_BAR_HEIGHT, BUTTON_SIZE, BUTTON_SPACING, MARGIN};
 use crate::input::{FloraInputEvent, spawn_input_thread};
 use crate::backend::init_graphics;
+
+smithay::backend::renderer::element::render_elements! {
+    pub CustomRenderElement<=GlowRenderer>;
+    Surface=WaylandSurfaceRenderElement<GlowRenderer>,
+    Solid=SolidColorRenderElement,
+}
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt().init();
@@ -256,10 +262,15 @@ fn forward_pointer_motion(state: &mut FloraState, time: u32) {
         let under = state.windows.iter().rev().find_map(|w| {
             let px = state.pointer_location.x.round() as i32;
             let py = state.pointer_location.y.round() as i32;
-            let local_x = px - w.location.x;
-            let local_y = py - w.location.y;
-            // TODO: Use actual window size from surface state
-            if local_x >= 0 && local_x <= 800 && local_y >= 0 && local_y <= 600 {
+            let relative_x = px - w.location.x;
+            let relative_y = py - w.location.y;
+            
+            let surface_size = w.toplevel.current_state().size.unwrap_or((800, 600).into());
+            
+            if relative_x >= 0 && relative_x < surface_size.w && 
+               relative_y >= TITLE_BAR_HEIGHT && relative_y < (TITLE_BAR_HEIGHT + surface_size.h) {
+                let local_x = relative_x;
+                let local_y = relative_y - TITLE_BAR_HEIGHT;
                 Some((w.toplevel.wl_surface().clone(), Point::<f64, smithay::utils::Logical>::from((local_x as f64, local_y as f64))))
             } else {
                 None
@@ -281,9 +292,26 @@ fn handle_pointer_button(state: &mut FloraState, button: u32, pressed: bool, tim
         let hit = state.windows.iter().enumerate().rev().find_map(|(i, w)| {
             let px = state.pointer_location.x.round() as i32;
             let py = state.pointer_location.y.round() as i32;
-            let local_x = px - w.location.x;
-            let local_y = py - w.location.y;
-            if local_x >= 0 && local_x <= 800 && local_y >= 0 && local_y <= 600 {
+            let relative_x = px - w.location.x;
+            let relative_y = py - w.location.y;
+            
+            let surface_size = w.toplevel.current_state().size.unwrap_or((800, 600).into());
+            
+            if relative_x >= 0 && relative_x < surface_size.w && 
+               relative_y >= 0 && relative_y < (TITLE_BAR_HEIGHT + surface_size.h) {
+                
+                // Button handling (Close)
+                if relative_y < TITLE_BAR_HEIGHT {
+                    let btn_y_start = (TITLE_BAR_HEIGHT - BUTTON_SIZE) / 2;
+                    if relative_y >= btn_y_start && relative_y < (btn_y_start + BUTTON_SIZE) {
+                        let red_x = MARGIN;
+                        if relative_x >= red_x && relative_x < (red_x + BUTTON_SIZE) {
+                            info!("🔴 TitleBar: Close clicked");
+                            w.toplevel.send_close();
+                        }
+                    }
+                }
+                
                 let w_loc_f = Point::<f64, Physical>::from((w.location.x as f64, w.location.y as f64));
                 Some((i, state.pointer_location - w_loc_f))
             } else {
@@ -296,10 +324,18 @@ fn handle_pointer_button(state: &mut FloraState, button: u32, pressed: bool, tim
             if let Some(keyboard) = state.seat.get_keyboard() {
                 keyboard.set_focus(state, Some(surface), serial);
             }
+            
+            let py = state.pointer_location.y.round() as i32;
+            let rel_y = py - state.windows[idx].location.y;
+
             let win = state.windows.remove(idx);
             state.windows.push(win);
-            state.grab_state = Some((state.windows.len() - 1, offset));
+            
+            if rel_y < TITLE_BAR_HEIGHT {
+                state.grab_state = Some((state.windows.len() - 1, offset));
+            }
         }
+
     } else {
         state.grab_state = None;
     }
@@ -314,12 +350,63 @@ fn handle_pointer_button(state: &mut FloraState, button: u32, pressed: bool, tim
 fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports::wayland_server::Display<FloraState>>>) -> Result<()> {
     if let (Some(compositor), Some(renderer)) = (state.compositor.as_mut(), state.renderer.as_mut()) {
         let color = [0.2, 0.2, 0.2, 1.0];
-        let mut elements: Vec<WaylandSurfaceRenderElement<GlowRenderer>> = Vec::new();
+        let mut elements: Vec<CustomRenderElement> = Vec::new();
         for window in &state.windows {
-            elements.extend(render_elements_from_surface_tree(renderer, window.toplevel.wl_surface(), window.location, 1.0, 1.0, Kind::Unspecified));
+            let surface_size = window.toplevel.current_state().size.unwrap_or((800, 600).into());
+            
+            // 1. Draw Title Bar Background (Solid Gray)
+            let bar_rect = smithay::utils::Rectangle::new(window.location, (surface_size.w, TITLE_BAR_HEIGHT).into());
+            elements.push(CustomRenderElement::Solid(SolidColorRenderElement::new(
+                smithay::backend::renderer::element::Id::new(),
+                bar_rect,
+                smithay::backend::renderer::utils::CommitCounter::default(),
+                [0.15, 0.15, 0.15, 1.0],
+                Kind::Unspecified
+            )));
+
+            // 2. Draw Traffic Light Buttons
+            let btn_y = window.location.y + (TITLE_BAR_HEIGHT - BUTTON_SIZE) / 2;
+            
+            // Red (Close)
+            elements.push(CustomRenderElement::Solid(SolidColorRenderElement::new(
+                smithay::backend::renderer::element::Id::new(),
+                smithay::utils::Rectangle::new((window.location.x + MARGIN, btn_y).into(), (BUTTON_SIZE, BUTTON_SIZE).into()),
+                smithay::backend::renderer::utils::CommitCounter::default(),
+                [1.0, 0.35, 0.35, 1.0],
+                Kind::Unspecified
+            )));
+            
+            // Yellow (Minimize)
+            elements.push(CustomRenderElement::Solid(SolidColorRenderElement::new(
+                smithay::backend::renderer::element::Id::new(),
+                smithay::utils::Rectangle::new((window.location.x + MARGIN + BUTTON_SIZE + BUTTON_SPACING, btn_y).into(), (BUTTON_SIZE, BUTTON_SIZE).into()),
+                smithay::backend::renderer::utils::CommitCounter::default(),
+                [1.0, 0.75, 0.0, 1.0],
+                Kind::Unspecified
+            )));
+            
+            // Green (Maximize)
+            elements.push(CustomRenderElement::Solid(SolidColorRenderElement::new(
+                smithay::backend::renderer::element::Id::new(),
+                smithay::utils::Rectangle::new((window.location.x + MARGIN + (BUTTON_SIZE + BUTTON_SPACING) * 2, btn_y).into(), (BUTTON_SIZE, BUTTON_SIZE).into()),
+                smithay::backend::renderer::utils::CommitCounter::default(),
+                [0.0, 0.8, 0.3, 1.0],
+                Kind::Unspecified
+            )));
+
+            // 3. Draw Client Surface (shifted down by TITLE_BAR_HEIGHT)
+            let surface_location = Point::from((window.location.x, window.location.y + TITLE_BAR_HEIGHT));
+            elements.extend(render_elements_from_surface_tree::<GlowRenderer, CustomRenderElement>(
+                renderer, 
+                window.toplevel.wl_surface(), 
+                surface_location, 
+                1.0, 1.0, 
+                Kind::Unspecified
+            ));
         }
         
-        if let Err(e) = compositor.render_frame::<GlowRenderer, WaylandSurfaceRenderElement<GlowRenderer>>(renderer, &elements, color, smithay::backend::drm::compositor::FrameFlags::empty()) {
+        if let Err(e) = compositor.render_frame::<GlowRenderer, CustomRenderElement>(renderer, &elements, color, smithay::backend::drm::compositor::FrameFlags::empty()) {
+
             if format!("{:?}", e) != "EmptyFrame" {
                 error!("Rendering: render_frame failed: {:?}", e);
             }
