@@ -409,80 +409,65 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
         
         let mut pending_close = None;
         
-        // DEBUG: Log window count for egui rendering
-        if !window_data.is_empty() {
-            info!("Rendering {} window(s) with egui overlay", window_data.len());
-        }
-        
         // Render egui UI overlay
         let egui_element = state.egui_state.render(
             |ctx| {
+                // Use screen painter for direct drawing (no Area clipping issues)
+                let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("title_buttons")));
+                
                 for (idx, window_pos, surface_size, is_focused) in &window_data {
-                    // Create a fixed window for each titlebar
-                    egui::Area::new(egui::Id::new(format!("titlebar_{}", idx)))
-                        .fixed_pos([window_pos.x as f32, window_pos.y as f32])
+                    // Titlebar background
+                    let title_rect = egui::Rect::from_min_size(
+                        egui::pos2(window_pos.x as f32, window_pos.y as f32),
+                        egui::vec2(surface_size.w as f32, TITLE_BAR_HEIGHT as f32),
+                    );
+                    painter.rect_filled(title_rect, 0.0, egui::Color32::from_rgb(38, 38, 38));
+                    
+                    // macOS button colors
+                    let colors = if *is_focused {
+                        [
+                            egui::Color32::from_rgb(255, 95, 87),  // Red (Close)
+                            egui::Color32::from_rgb(255, 189, 46), // Yellow (Minimize)
+                            egui::Color32::from_rgb(40, 200, 64),  // Green (Maximize)
+                        ]
+                    } else {
+                        [egui::Color32::from_rgb(75, 75, 75); 3] // Gray when inactive
+                    };
+                    
+                    // Button geometry
+                    let btn_radius = 6.0_f32;
+                    let btn_spacing = 8.0_f32;
+                    let left_margin = 12.0_f32;
+                    let center_y = window_pos.y as f32 + (TITLE_BAR_HEIGHT as f32 / 2.0);
+                    
+                    for (i, btn_color) in colors.iter().enumerate() {
+                        let center_x = window_pos.x as f32 + left_margin + btn_radius 
+                            + (i as f32 * (btn_radius * 2.0 + btn_spacing));
+                        let center = egui::pos2(center_x, center_y);
+                        
+                        // Draw circle button
+                        painter.circle_filled(center, btn_radius, *btn_color);
+                    }
+                    
+                    // Create invisible Area for click handling only
+                    let btn_area_rect = egui::Rect::from_min_size(
+                        egui::pos2(window_pos.x as f32 + left_margin - 4.0, center_y - 10.0),
+                        egui::vec2(60.0, 20.0),
+                    );
+                    
+                    egui::Area::new(egui::Id::new(format!("titlebar_buttons_{}", idx)))
+                        .fixed_pos([btn_area_rect.min.x, btn_area_rect.min.y])
                         .show(ctx, |ui| {
-                            // Titlebar background - paint at absolute position
-                            let title_rect = egui::Rect::from_min_size(
-                                egui::pos2(window_pos.x as f32, window_pos.y as f32),
-                                egui::vec2(surface_size.w as f32, TITLE_BAR_HEIGHT as f32),
-                            );
-                            ui.painter().rect_filled(title_rect, 0.0, egui::Color32::from_rgb(38, 38, 38));
+                            // Allocate the button area for interaction
+                            let response = ui.allocate_rect(btn_area_rect, egui::Sense::click());
                             
-                            // macOS button colors - colored when focused, gray when not
-                            let colors = if *is_focused {
-                                [
-                                    egui::Color32::from_rgb(255, 95, 87),  // Red (Close)
-                                    egui::Color32::from_rgb(255, 189, 46), // Yellow (Minimize)
-                                    egui::Color32::from_rgb(40, 200, 64),  // Green (Maximize)
-                                ]
-                            } else {
-                                [egui::Color32::from_rgb(75, 75, 75); 3] // Gray when inactive
-                            };
-                            
-                            // Hover icons (macOS style)
-                            let icons = ["✕", "—", "＋"];
-                            
-                            // Tweak geometry
-                            let btn_radius = 6.0_f32;
-                            let btn_spacing = 8.0_f32;
-                            let left_margin = 12.0_f32;
-                            let center_y = window_pos.y as f32 + (TITLE_BAR_HEIGHT as f32 / 2.0);
-                            
-                            // Group rect for unified hover feel
-                            let group_rect = egui::Rect::from_min_max(
-                                egui::pos2(window_pos.x as f32 + left_margin - 4.0, center_y - 10.0),
-                                egui::pos2(window_pos.x as f32 + left_margin + 50.0, center_y + 10.0)
-                            );
-                            let is_hovering_group = ui.rect_contains_pointer(group_rect);
-                            
-                            for (i, btn_color) in colors.iter().enumerate() {
-                                // Calculate center position for each button
-                                let center_x = window_pos.x as f32 + left_margin + btn_radius 
-                                    + (i as f32 * (btn_radius * 2.0 + btn_spacing));
-                                let center = egui::pos2(center_x, center_y);
-                                
-                                // Draw circle button
-                                ui.painter().circle_filled(center, btn_radius, *btn_color);
-                                
-                                // Draw hover icon when hovering and focused
-                                if is_hovering_group && *is_focused {
-                                    let icon_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 160);
-                                    ui.painter().text(
-                                        center,
-                                        egui::Align2::CENTER_CENTER,
-                                        icons[i],
-                                        egui::FontId::proportional(8.5),
-                                        icon_color,
-                                    );
-                                }
-                                
-                                // Create interaction area for click detection
-                                let btn_rect = egui::Rect::from_center_size(center, egui::vec2(15.0, 15.0));
-                                let response = ui.allocate_rect(btn_rect, egui::Sense::click());
-                                
-                                if response.clicked() && *is_focused {
-                                    if i == 0 {
+                            if response.clicked() && *is_focused {
+                                // Check which button was clicked based on pointer position
+                                if let Some(pos) = response.interact_pointer_pos() {
+                                    let rel_x = pos.x - (window_pos.x as f32 + left_margin);
+                                    let btn_width = btn_radius * 2.0 + btn_spacing;
+                                    let btn_idx = (rel_x / btn_width) as usize;
+                                    if btn_idx == 0 {
                                         pending_close = Some(*idx);
                                     }
                                 }
