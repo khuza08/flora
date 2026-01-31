@@ -4,6 +4,7 @@ use smithay::{
         renderer::glow::GlowRenderer,
     },
     output::{Output, PhysicalProperties, Subpixel, Mode as OutputMode},
+    utils::Transform,
 };
 use tracing::info;
 use anyhow::{Result, anyhow};
@@ -36,7 +37,7 @@ pub fn init_winit_graphics() -> Result<(
 
     output.change_current_state(
         Some(mode),
-        None,
+        Some(Transform::Flipped180),
         None,
         Some((0, 0).into()),
     );

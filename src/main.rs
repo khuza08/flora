@@ -602,8 +602,8 @@ fn gather_elements(
                     for (idx, pos, size, is_focused, bar_id) in window_data {
                         egui::Window::new(format!("window_{}", idx))
                             .id(egui::Id::new(bar_id))
-                            .fixed_pos(egui::pos2(pos.x as f32, pos.y as f32))
-                            .fixed_size(egui::vec2(size.w as f32, TITLE_BAR_HEIGHT as f32))
+                            .fixed_pos(egui::pos2(pos.x as f32 / scale as f32, pos.y as f32 / scale as f32))
+                            .fixed_size(egui::vec2(size.w as f32 / scale as f32, TITLE_BAR_HEIGHT as f32 / scale as f32))
                             .title_bar(false)
                             .frame(egui::Frame::NONE.fill(egui::Color32::from_rgba_unmultiplied(20, 20, 20, 240)))
                             .show(ui.ctx(), |ui| {
@@ -641,11 +641,6 @@ fn gather_elements(
     );
 
     // 2. Gather elements
-    match egui_element {
-        Ok(egui_tex) => elements.push(CustomRenderElement::Egui(egui_tex)),
-        Err(err) => error!("Failed to render egui overlay: {:?}", err),
-    }
-
     for window in windows {
         let surface_location = Point::from((window.location.x, window.location.y + TITLE_BAR_HEIGHT));
         elements.extend(render_elements_from_surface_tree::<GlowRenderer, CustomRenderElement>(
@@ -667,6 +662,12 @@ fn gather_elements(
             [0.15, 0.15, 0.15, 1.0],
             Kind::Unspecified
         )));
+    }
+
+    // Push egui LAST so it's on top of everything
+    match egui_element {
+        Ok(egui_tex) => elements.push(CustomRenderElement::Egui(egui_tex)),
+        Err(err) => error!("Failed to render egui overlay: {:?}", err),
     }
 
     Ok((elements, pending_close))
