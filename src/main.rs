@@ -415,58 +415,51 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE)
                     .show(ctx, |ui| {
-                        // 1. RED TINT
-                        ui.painter().rect_filled(
-                            ui.max_rect(), 
-                            0.0, 
-                            egui::Color32::from_rgba_unmultiplied(255, 0, 0, 64)
+                        // 1. CYAN CROSSHAIR at (200, 200)
+                        ui.painter().line_segment(
+                            [egui::pos2(180.0, 200.0), egui::pos2(220.0, 200.0)],
+                            egui::Stroke::new(2.0, egui::Color32::CYAN)
+                        );
+                        ui.painter().line_segment(
+                            [egui::pos2(200.0, 180.0), egui::pos2(200.0, 220.0)],
+                            egui::Stroke::new(2.0, egui::Color32::CYAN)
                         );
 
                         for (idx, window_pos, _surface_size, _is_focused) in &window_data {
                             let win_x = window_pos.x as f32;
                             let win_y = window_pos.y as f32;
 
-                            // 2. DEBUG TEXT INSIDE LOOP
+                            // 2. DEBUG TEXT (Always visible)
                             ui.painter().text(
-                                egui::pos2(120.0, 80.0 + (*idx as f32 * 30.0)),
+                                egui::pos2(120.0, 80.0 + (*idx as f32 * 40.0)),
                                 egui::Align2::LEFT_TOP,
-                                format!("Win{} Pos: {:.1}, {:.1}", idx, win_x, win_y),
-                                egui::FontId::proportional(20.0),
+                                format!("Win{} at ({:.1}, {:.1})", idx, win_x, win_y),
+                                egui::FontId::proportional(24.0),
                                 egui::Color32::WHITE
                             );
 
-                            // 3. GUARANTEED DOT at (200, 200) if loop runs
-                            ui.painter().circle_filled(
-                                egui::pos2(200.0, 200.0),
-                                10.0,
-                                egui::Color32::CYAN
-                            );
-
-                            // 4. GREEN MARKER at win_x, win_y
+                            // 3. TARGET BOX (White box with Red inside) at (win_x, win_y)
+                            // This SHOULD cover the top-left corner of the window
                             ui.painter().rect_filled(
-                                egui::Rect::from_min_size(egui::pos2(win_x, win_y), egui::vec2(15.0, 15.0)),
+                                egui::Rect::from_min_size(egui::pos2(win_x, win_y), egui::vec2(40.0, 40.0)),
                                 0.0,
-                                egui::Color32::GREEN
+                                egui::Color32::WHITE
+                            );
+                            ui.painter().rect_filled(
+                                egui::Rect::from_min_size(egui::pos2(win_x + 5.0, win_y + 5.0), egui::vec2(30.0, 30.0)),
+                                0.0,
+                                egui::Color32::RED
                             );
 
-                            // 5. TRAFFIC LIGHTS
+                            // 4. TRAFFIC LIGHTS (Aggressive White Dots)
                             for i in 0..3 {
-                                let center_x = win_x + 20.0 + (i as f32 * 25.0);
+                                let center_x = win_x + 20.0 + (i as f32 * 30.0);
                                 let center_y = win_y + 15.0;
-                                
                                 ui.painter().circle_filled(
                                     egui::pos2(center_x, center_y),
-                                    8.0,
+                                    10.0,
                                     egui::Color32::WHITE
                                 );
-                                
-                                if i == 0 {
-                                    let btn_rect = egui::Rect::from_center_size(egui::pos2(center_x, center_y), egui::vec2(14.0, 14.0));
-                                    let response = ui.interact(btn_rect, egui::Id::new(format!("btn_{}", idx)), egui::Sense::click());
-                                    if response.clicked() {
-                                        pending_close = Some(*idx);
-                                    }
-                                }
                             }
                         }
                     });
