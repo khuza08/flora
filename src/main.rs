@@ -652,12 +652,8 @@ fn main() -> anyhow::Result<()> {
                             state.needs_redraw = true;
                         }
                         FloraInputEvent::PointerMotionAbsolute { location, time } => {
-                            // Scale normalized coordinates to our screen size
-                            state.pointer_location.x = location.x * 1280.0;
-                            state.pointer_location.y = location.y * 800.0;
+                            state.pointer_location = location;
                             
-                            info!("🖱️ Absolute Pointer: location={:?} (scaled to {:?})", location, state.pointer_location);
-
                             if let Some((idx, offset)) = state.grab_state {
                                 if let Some(window) = state.windows.get_mut(idx) {
                                     window.location = Point::<i32, Physical>::from((
@@ -770,7 +766,9 @@ fn main() -> anyhow::Result<()> {
                                         let _ = input_sender.send(FloraInputEvent::PointerMotion { delta: (m.dx(), m.dy()).into(), time: m.time() as u32 });
                                     }
                                     PointerEvent::MotionAbsolute(m) => {
-                                        let _ = input_sender.send(FloraInputEvent::PointerMotionAbsolute { location: (m.absolute_x(), m.absolute_y()).into(), time: m.time() as u32 });
+                                        let x = m.absolute_x_transformed(1280) as f64;
+                                        let y = m.absolute_y_transformed(800) as f64;
+                                        let _ = input_sender.send(FloraInputEvent::PointerMotionAbsolute { location: (x, y).into(), time: m.time() as u32 });
                                     }
                                     PointerEvent::Button(b) => {
                                         info!("Input Thread: Raw Button: button={} state={:?}", b.button(), b.button_state());
