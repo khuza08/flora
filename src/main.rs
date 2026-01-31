@@ -1,13 +1,14 @@
 pub mod state;
 mod input;
 mod backend;
+mod decorations;
 
 use smithay::{
     backend::{
         udev::{UdevBackend, UdevEvent},
         renderer::{
             glow::GlowRenderer,
-            element::{Kind, surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement}, solid::SolidColorRenderElement},
+            element::{Kind, surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement}, solid::SolidColorRenderElement, memory::MemoryRenderBufferRenderElement},
         },
         drm::DrmEvent,
     },
@@ -34,6 +35,7 @@ smithay::backend::renderer::element::render_elements! {
     pub CustomRenderElement<=GlowRenderer>;
     Surface=WaylandSurfaceRenderElement<GlowRenderer>,
     Solid=SolidColorRenderElement,
+    Memory=MemoryRenderBufferRenderElement<GlowRenderer>,
 }
 
 fn main() -> Result<()> {
@@ -357,36 +359,42 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
             // Elements are rendered front-to-back (first element = top layer)
             // So we push: buttons first (top), then surface, then title bar bg (bottom)
             
-            // 1. Draw Traffic Light Buttons (on top of everything)
+            // 1. Draw Traffic Light Buttons (on top of everything) - using circle textures
             let button_render_size = BUTTON_SIZE;
             let btn_y = window.location.y + (TITLE_BAR_HEIGHT - button_render_size) / 2;
             
             // Red (Close)
-            elements.push(CustomRenderElement::Solid(SolidColorRenderElement::new(
-                window.red_id.clone(),
-                smithay::utils::Rectangle::new((window.location.x + MARGIN, btn_y).into(), (button_render_size, button_render_size).into()),
-                smithay::backend::renderer::utils::CommitCounter::default(),
-                [1.0, 0.35, 0.35, 1.0],
-                Kind::Unspecified
-            )));
+            elements.push(CustomRenderElement::Memory(MemoryRenderBufferRenderElement::from_buffer(
+                renderer,
+                Point::<f64, Physical>::from((window.location.x as f64 + MARGIN as f64, btn_y as f64)),
+                &state.red_button_buffer,
+                None, // alpha
+                None, // src_transform
+                None, // size
+                Kind::Unspecified,
+            ).expect("Failed to create red button element")));
             
             // Yellow (Minimize)
-            elements.push(CustomRenderElement::Solid(SolidColorRenderElement::new(
-                window.yellow_id.clone(),
-                smithay::utils::Rectangle::new((window.location.x + MARGIN + button_render_size + BUTTON_SPACING, btn_y).into(), (button_render_size, button_render_size).into()),
-                smithay::backend::renderer::utils::CommitCounter::default(),
-                [1.0, 0.75, 0.0, 1.0],
-                Kind::Unspecified
-            )));
+            elements.push(CustomRenderElement::Memory(MemoryRenderBufferRenderElement::from_buffer(
+                renderer,
+                Point::<f64, Physical>::from((window.location.x as f64 + MARGIN as f64 + button_render_size as f64 + BUTTON_SPACING as f64, btn_y as f64)),
+                &state.yellow_button_buffer,
+                None,
+                None,
+                None,
+                Kind::Unspecified,
+            ).expect("Failed to create yellow button element")));
             
             // Green (Maximize)
-            elements.push(CustomRenderElement::Solid(SolidColorRenderElement::new(
-                window.green_id.clone(),
-                smithay::utils::Rectangle::new((window.location.x + MARGIN + (button_render_size + BUTTON_SPACING) * 2, btn_y).into(), (button_render_size, button_render_size).into()),
-                smithay::backend::renderer::utils::CommitCounter::default(),
-                [0.0, 0.8, 0.3, 1.0],
-                Kind::Unspecified
-            )));
+            elements.push(CustomRenderElement::Memory(MemoryRenderBufferRenderElement::from_buffer(
+                renderer,
+                Point::<f64, Physical>::from((window.location.x as f64 + MARGIN as f64 + (button_render_size as f64 + BUTTON_SPACING as f64) * 2.0, btn_y as f64)),
+                &state.green_button_buffer,
+                None,
+                None,
+                None,
+                Kind::Unspecified,
+            ).expect("Failed to create green button element")));
 
             // 2. Draw Client Surface (shifted down by TITLE_BAR_HEIGHT)
             let surface_location = Point::from((window.location.x, window.location.y + TITLE_BAR_HEIGHT));

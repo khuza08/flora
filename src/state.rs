@@ -17,9 +17,12 @@ use smithay::{
         egl::EGLDisplay,
         renderer::{
             glow::GlowRenderer,
+            element::memory::MemoryRenderBuffer,
         },
     },
 };
+
+use crate::decorations::{create_circle_buffer, RED_BUTTON_COLOR, YELLOW_BUTTON_COLOR, GREEN_BUTTON_COLOR};
 
 pub use smithay::reexports::wayland_server::backend::ClientData;
 pub use smithay::wayland::compositor::CompositorClientState;
@@ -77,6 +80,10 @@ pub struct FloraState {
     pub socket_name: std::ffi::OsString,
     pub needs_redraw: bool,
     pub _drm_device: Option<DrmDevice>,
+    // Pre-generated circle button textures
+    pub red_button_buffer: MemoryRenderBuffer,
+    pub yellow_button_buffer: MemoryRenderBuffer,
+    pub green_button_buffer: MemoryRenderBuffer,
 }
 
 impl FloraState {
@@ -113,6 +120,10 @@ impl FloraState {
             socket_name: "".into(),
             needs_redraw: false,
             _drm_device: None,
+            // Create circle button textures
+            red_button_buffer: create_circle_buffer(BUTTON_SIZE, RED_BUTTON_COLOR),
+            yellow_button_buffer: create_circle_buffer(BUTTON_SIZE, YELLOW_BUTTON_COLOR),
+            green_button_buffer: create_circle_buffer(BUTTON_SIZE, GREEN_BUTTON_COLOR),
         }
     }
 }
