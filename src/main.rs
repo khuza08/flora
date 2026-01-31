@@ -1,14 +1,13 @@
 pub mod state;
 mod input;
 mod backend;
-mod decorations;
 
 use smithay::{
     backend::{
         udev::{UdevBackend, UdevEvent},
         renderer::{
             glow::GlowRenderer,
-            element::{Kind, surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement}, solid::SolidColorRenderElement, memory::MemoryRenderBufferRenderElement},
+            element::{Kind, surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement}, solid::SolidColorRenderElement, texture::TextureRenderElement},
         },
         drm::DrmEvent,
     },
@@ -16,12 +15,14 @@ use smithay::{
         calloop::{EventLoop, Interest, Mode, PostAction, generic::Generic, channel::Event},
         wayland_server::Display,
     },
-    utils::{SERIAL_COUNTER, Point, Physical},
+    utils::{SERIAL_COUNTER, Point, Physical, Rectangle},
     wayland::{
         compositor::{with_surface_tree_downward, TraversalAction, SurfaceAttributes},
     },
     input::keyboard::FilterResult,
 };
+
+use smithay::backend::renderer::gles::GlesTexture;
 
 use std::{time::Duration, rc::Rc, cell::RefCell, os::unix::io::{AsRawFd, BorrowedFd}};
 use tracing::{info, warn, error};
@@ -35,7 +36,7 @@ smithay::backend::renderer::element::render_elements! {
     pub CustomRenderElement<=GlowRenderer>;
     Surface=WaylandSurfaceRenderElement<GlowRenderer>,
     Solid=SolidColorRenderElement,
-    Memory=MemoryRenderBufferRenderElement<GlowRenderer>,
+    Egui=TextureRenderElement<GlesTexture>,
 }
 
 fn main() -> Result<()> {
@@ -353,50 +354,86 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
     if let (Some(compositor), Some(renderer)) = (state.compositor.as_mut(), state.renderer.as_mut()) {
         let color = [0.2, 0.2, 0.2, 1.0];
         let mut elements: Vec<CustomRenderElement> = Vec::new();
+        
+        // Get output geometry for egui
+        let output_size = state.output.as_ref()
+            .and_then(|o| o.current_mode())
+            .map(|m| m.size)
+            .unwrap_or((1280, 800).into());
+        
+        // Collect window data for egui (to avoid borrow issues)
+        let window_data: Vec<_> = state.windows.iter().enumerate().map(|(idx, w)| {
+            let surface_size = w.toplevel.current_state().size.unwrap_or((800, 600).into());
+            let is_focused = state.seat.get_keyboard()
+                .map(|kb| kb.current_focus().map(|f| f == *w.toplevel.wl_surface()).unwrap_or(false))
+                .unwrap_or(false);
+            (idx, w.location, surface_size, is_focused)
+        }).collect();
+        
+        // Render egui UI overlay
+        let egui_element = state.egui_state.render(
+            |ctx| {
+                for (idx, window_pos, surface_size, is_focused) in &window_data {
+                    // Create a fixed window for each titlebar
+                    egui::Area::new(egui::Id::new(format!("titlebar_{}", idx)))
+                        .fixed_pos([window_pos.x as f32, window_pos.y as f32])
+                        .show(ctx, |ui| {
+                            // Titlebar background
+                            let title_rect = egui::Rect::from_min_size(
+                                egui::pos2(0.0, 0.0),
+                                egui::vec2(surface_size.w as f32, TITLE_BAR_HEIGHT as f32),
+                            );
+                            ui.painter().rect_filled(title_rect, 0.0, egui::Color32::from_rgb(38, 38, 38));
+                            
+                            ui.horizontal(|ui| {
+                                ui.add_space(MARGIN as f32);
+                                
+                                // macOS button colors - colored when focused, gray when not
+                                let colors = if *is_focused {
+                                    [
+                                        egui::Color32::from_rgb(255, 95, 87),  // Red (Close)
+                                        egui::Color32::from_rgb(255, 189, 46), // Yellow (Minimize)
+                                        egui::Color32::from_rgb(40, 200, 64),  // Green (Maximize)
+                                    ]
+                                } else {
+                                    [egui::Color32::from_rgb(77, 77, 77); 3] // Gray when inactive
+                                };
+                                
+                                for (i, btn_color) in colors.iter().enumerate() {
+                                    let btn_size = egui::vec2(BUTTON_SIZE as f32, BUTTON_SIZE as f32);
+                                    let (rect, response) = ui.allocate_exact_size(btn_size, egui::Sense::click());
+                                    
+                                    // Draw circle button
+                                    let center = rect.center();
+                                    let radius = BUTTON_SIZE as f32 / 2.0;
+                                    ui.painter().circle_filled(center, radius, *btn_color);
+                                    
+                                    // Handle click (will be processed via state.egui_state.wants_pointer_input)
+                                    if response.clicked() && i == 0 && *is_focused {
+                                        // Mark for close action - handled in input loop
+                                    }
+                                    
+                                    ui.add_space(BUTTON_SPACING as f32);
+                                }
+                            });
+                        });
+                }
+            },
+            renderer,
+            Rectangle::new((0, 0).into(), (output_size.w, output_size.h).into()),
+            1.0,
+            1.0,
+        );
+        
+        if let Ok(egui_tex) = egui_element {
+            elements.push(CustomRenderElement::Egui(egui_tex));
+        }
+        
+        // Draw client surfaces and title bar backgrounds
         for window in &state.windows {
             let surface_size = window.toplevel.current_state().size.unwrap_or((800, 600).into());
             
-            // Elements are rendered front-to-back (first element = top layer)
-            // So we push: buttons first (top), then surface, then title bar bg (bottom)
-            
-            // 1. Draw Traffic Light Buttons (on top of everything) - using circle textures
-            let button_render_size = BUTTON_SIZE;
-            let btn_y = window.location.y + (TITLE_BAR_HEIGHT - button_render_size) / 2;
-            
-            // Red (Close)
-            elements.push(CustomRenderElement::Memory(MemoryRenderBufferRenderElement::from_buffer(
-                renderer,
-                Point::<f64, Physical>::from((window.location.x as f64 + MARGIN as f64, btn_y as f64)),
-                &state.red_button_buffer,
-                None, // alpha
-                None, // src_transform
-                None, // size
-                Kind::Unspecified,
-            ).expect("Failed to create red button element")));
-            
-            // Yellow (Minimize)
-            elements.push(CustomRenderElement::Memory(MemoryRenderBufferRenderElement::from_buffer(
-                renderer,
-                Point::<f64, Physical>::from((window.location.x as f64 + MARGIN as f64 + button_render_size as f64 + BUTTON_SPACING as f64, btn_y as f64)),
-                &state.yellow_button_buffer,
-                None,
-                None,
-                None,
-                Kind::Unspecified,
-            ).expect("Failed to create yellow button element")));
-            
-            // Green (Maximize)
-            elements.push(CustomRenderElement::Memory(MemoryRenderBufferRenderElement::from_buffer(
-                renderer,
-                Point::<f64, Physical>::from((window.location.x as f64 + MARGIN as f64 + (button_render_size as f64 + BUTTON_SPACING as f64) * 2.0, btn_y as f64)),
-                &state.green_button_buffer,
-                None,
-                None,
-                None,
-                Kind::Unspecified,
-            ).expect("Failed to create green button element")));
-
-            // 2. Draw Client Surface (shifted down by TITLE_BAR_HEIGHT)
+            // Client Surface (shifted down by TITLE_BAR_HEIGHT)
             let surface_location = Point::from((window.location.x, window.location.y + TITLE_BAR_HEIGHT));
             elements.extend(render_elements_from_surface_tree::<GlowRenderer, CustomRenderElement>(
                 renderer, 
@@ -406,7 +443,7 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
                 Kind::Unspecified
             ));
 
-            // 3. Draw Title Bar Background (Solid Gray) - at the back
+            // Title Bar Background (Solid Gray) - rendered below egui overlay
             let bar_rect = smithay::utils::Rectangle::new(window.location, (surface_size.w, TITLE_BAR_HEIGHT).into());
             elements.push(CustomRenderElement::Solid(SolidColorRenderElement::new(
                 window.bar_id.clone(),

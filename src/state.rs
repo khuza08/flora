@@ -1,6 +1,6 @@
 use smithay::{
     reexports::wayland_server::{DisplayHandle, protocol::wl_surface::WlSurface},
-    utils::{Point, Physical},
+    utils::{Point, Physical, Rectangle},
     wayland::{
         compositor::{CompositorState, CompositorHandler},
         shell::xdg::{XdgShellState, XdgShellHandler, ToplevelSurface, PopupSurface, PositionerState},
@@ -15,14 +15,11 @@ use smithay::{
         allocator::gbm::GbmAllocator,
         drm::exporter::gbm::GbmFramebufferExporter,
         egl::EGLDisplay,
-        renderer::{
-            glow::GlowRenderer,
-            element::memory::MemoryRenderBuffer,
-        },
+        renderer::glow::GlowRenderer,
     },
 };
 
-use crate::decorations::{create_circle_buffer, RED_BUTTON_COLOR, YELLOW_BUTTON_COLOR, GREEN_BUTTON_COLOR};
+use smithay_egui::EguiState;
 
 pub use smithay::reexports::wayland_server::backend::ClientData;
 pub use smithay::wayland::compositor::CompositorClientState;
@@ -40,9 +37,6 @@ pub struct Window {
     pub location: Point<i32, Physical>,
     pub title_bar_height: i32,
     pub bar_id: smithay::backend::renderer::element::Id,
-    pub red_id: smithay::backend::renderer::element::Id,
-    pub yellow_id: smithay::backend::renderer::element::Id,
-    pub green_id: smithay::backend::renderer::element::Id,
 }
 
 
@@ -80,10 +74,9 @@ pub struct FloraState {
     pub socket_name: std::ffi::OsString,
     pub needs_redraw: bool,
     pub _drm_device: Option<DrmDevice>,
-    // Pre-generated circle button textures
-    pub red_button_buffer: MemoryRenderBuffer,
-    pub yellow_button_buffer: MemoryRenderBuffer,
-    pub green_button_buffer: MemoryRenderBuffer,
+    // Egui state for UI rendering
+    pub egui_state: EguiState,
+    pub start_time: std::time::Instant,
 }
 
 impl FloraState {
@@ -120,10 +113,9 @@ impl FloraState {
             socket_name: "".into(),
             needs_redraw: false,
             _drm_device: None,
-            // Create circle button textures
-            red_button_buffer: create_circle_buffer(BUTTON_SIZE, RED_BUTTON_COLOR),
-            yellow_button_buffer: create_circle_buffer(BUTTON_SIZE, YELLOW_BUTTON_COLOR),
-            green_button_buffer: create_circle_buffer(BUTTON_SIZE, GREEN_BUTTON_COLOR),
+            // Initialize EguiState with default output size (will be updated later)
+            egui_state: EguiState::new(Rectangle::new((0, 0).into(), (1280, 800).into())),
+            start_time: std::time::Instant::now(),
         }
     }
 }
@@ -179,9 +171,6 @@ impl XdgShellHandler for FloraState {
             location: (100, 100).into(),
             title_bar_height: TITLE_BAR_HEIGHT,
             bar_id: smithay::backend::renderer::element::Id::new(),
-            red_id: smithay::backend::renderer::element::Id::new(),
-            yellow_id: smithay::backend::renderer::element::Id::new(),
-            green_id: smithay::backend::renderer::element::Id::new(),
         });
         if let Some(keyboard) = self.seat.get_keyboard() {
             keyboard.set_focus(self, Some(wl_surface.clone()), smithay::utils::SERIAL_COUNTER.next_serial());
