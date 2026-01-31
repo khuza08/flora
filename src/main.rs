@@ -290,7 +290,9 @@ impl CompositorHandler for FloraState {
 
     // Callback when a client commits a new surface buffer
     fn commit(&mut self, surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface) {
-        info!("Compositor: Commit received for surface {:?}", surface);
+        use smithay::backend::renderer::utils::with_renderer_surface_state;
+        let has_buffer = with_renderer_surface_state(surface, |state| state.buffer().is_some());
+        info!("Compositor: Commit received for surface {:?}, has_buffer={:?}", surface, has_buffer);
         // Register the buffer with Smithay's renderer infrastructure
         on_commit_buffer_handler::<Self>(surface);
         self.needs_redraw = true;
@@ -312,7 +314,8 @@ impl XdgShellHandler for FloraState {
         surface.with_pending_state(|state| {
             state.size = Some((800, 600).into());
         });
-        surface.send_configure();
+        let serial = surface.send_configure();
+        info!("XDG Shell: Sent configure to toplevel with serial {:?}", serial);
 
         let wl_surface = surface.wl_surface().clone();
         self.windows.push(Window {
@@ -339,6 +342,10 @@ impl XdgShellHandler for FloraState {
 
     fn grab(&mut self, _surface: PopupSurface, _seat: smithay::reexports::wayland_server::protocol::wl_seat::WlSeat, _serial: smithay::utils::Serial) {}
     fn reposition_request(&mut self, _surface: PopupSurface, _positioner: PositionerState, _token: u32) {}
+    
+    fn ack_configure(&mut self, _surface: smithay::reexports::wayland_server::protocol::wl_surface::WlSurface, _configure: smithay::wayland::shell::xdg::Configure) {
+        info!("XDG Shell: Received ack_configure for toplevel");
+    }
 }
 
 smithay::delegate_xdg_shell!(FloraState);
