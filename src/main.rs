@@ -412,7 +412,18 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
         // Render egui UI overlay
         let egui_element = state.egui_state.render(
             |ctx| {
-                for (idx, window_pos, surface_size, is_focused) in &window_data {
+                // RED TINT TEST: Tint the whole screen red to verify egui visibility
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::none())
+                    .show(ctx, |ui| {
+                        ui.painter().rect_filled(
+                            ui.max_rect(), 
+                            0.0, 
+                            egui::Color32::from_rgba_unmultiplied(255, 0, 0, 64) // 25% transparent red
+                        );
+                    });
+
+                for (idx, window_pos, _surface_size, is_focused) in &window_data {
                     // Button geometry
                     let btn_radius = 6.0_f32;
                     let btn_spacing = 8.0_f32;
@@ -431,7 +442,6 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
                     };
                     
                     // Use egui::Window with no frame for better bounds handling
-                    // This ensures smithay-egui includes the content in the rendered texture
                     egui::Window::new(format!("titlebar_{}", idx))
                         .title_bar(false)
                         .resizable(false)
@@ -442,13 +452,13 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
                             ui.horizontal(|ui| {
                                 ui.add_space(4.0);  // Left padding
                                 for (i, btn_color) in colors.iter().enumerate() {
-                                    // Allocate space for button - this gives us proper coordinates
+                                    // Allocate space for button
                                     let (rect, response) = ui.allocate_exact_size(
                                         egui::vec2(btn_radius * 2.0, btn_radius * 2.0),
                                         egui::Sense::click()
                                     );
                                     
-                                    // Draw circle at the allocated rect's CENTER (not absolute coords!)
+                                    // Draw circle at the allocated rect's CENTER
                                     ui.painter().circle_filled(rect.center(), btn_radius, *btn_color);
                                     
                                     // Add spacing between buttons
@@ -510,6 +520,15 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
                 error!("Failed to render egui overlay: {:?}", err);
             }
         }
+
+        // TEST: Draw a blue square at (50, 50) to verify smithay rendering
+        elements.push(CustomRenderElement::Solid(SolidColorRenderElement::new(
+            smithay::backend::renderer::element::Id::new(),
+            Rectangle::new((50, 50).into(), (50, 50).into()),
+            smithay::backend::renderer::utils::CommitCounter::default(),
+            [0.0, 0.0, 1.0, 1.0], // Blue
+            Kind::Unspecified
+        )));
         
         if let Err(e) = compositor.render_frame::<GlowRenderer, CustomRenderElement>(renderer, &elements, color, smithay::backend::drm::compositor::FrameFlags::empty()) {
 
