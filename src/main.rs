@@ -414,32 +414,49 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
         let egui_element = state.egui_state.render(
             |ctx| {
                 egui::CentralPanel::default()
-                    .frame(egui::Frame::NONE.fill(egui::Color32::from_black_alpha(200))) // Massive dark tint
+                    .frame(egui::Frame::NONE)
                     .show(ctx, |ui| {
-                        // 1. WHITE OVERLAY across everything
+                        // 1. CLEAR RED TINT (Verification)
                         ui.painter().rect_filled(
                             ui.max_rect(), 
                             0.0, 
-                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 64) // 25% white wash
+                            egui::Color32::from_rgba_unmultiplied(255, 0, 0, 32)
+                        );
+
+                        // 2. BLUE RECT TEST (Right next to text)
+                        // This will tell us if RECT rendering is broken
+                        ui.painter().rect_filled(
+                            egui::Rect::from_min_size(egui::pos2(50.0, 150.0), egui::vec2(100.0, 100.0)),
+                            0.0,
+                            egui::Color32::BLUE
                         );
 
                         for (idx, window_pos, _surface_size, _is_focused) in &window_data {
                             let win_x = window_pos.x as f32;
                             let win_y = window_pos.y as f32;
 
-                            // 2. BIG BOLD TEXT
+                            // 3. DEBUG TEXT
                             ui.painter().text(
-                                egui::pos2(win_x + 50.0, win_y - 20.0),
-                                egui::Align2::LEFT_TOP,
-                                "RENDER TEST",
-                                egui::FontId::proportional(30.0),
-                                egui::Color32::YELLOW
+                                egui::pos2(win_x + 60.0, win_y + 10.0),
+                                egui::Align2::LEFT_CENTER,
+                                format!("Win{} (UNICODE TEST)", idx),
+                                egui::FontId::proportional(20.0),
+                                egui::Color32::WHITE
                             );
 
-                            // 3. TARGET RECT
-                            ui.painter().rect_filled(
-                                egui::Rect::from_min_size(egui::pos2(win_x, win_y), egui::vec2(100.0, 20.0)),
-                                0.0,
+                            // 4. UNICODE BUTTONS (Textured, should be visible!)
+                            ui.painter().text(
+                                egui::pos2(win_x + 15.0, win_y + 15.0),
+                                egui::Align2::LEFT_CENTER,
+                                "🔴 🟡 🟢",
+                                egui::FontId::proportional(24.0),
+                                egui::Color32::WHITE
+                            );
+                            
+                            // 5. SHAPE TEST (White circle - likely to fail)
+                            ui.painter().circle_filled(
+                                egui::pos2(win_x + 150.0, win_y + 15.0),
+                                10.0,
                                 egui::Color32::WHITE
                             );
                         }
