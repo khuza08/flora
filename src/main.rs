@@ -409,6 +409,11 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
         
         let mut pending_close = None;
         
+        // DEBUG: Log window count for egui rendering
+        if !window_data.is_empty() {
+            info!("Rendering {} window(s) with egui overlay", window_data.len());
+        }
+        
         // Render egui UI overlay
         let egui_element = state.egui_state.render(
             |ctx| {
