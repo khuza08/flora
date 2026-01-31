@@ -420,7 +420,7 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
                             let win_x = window_pos.x as f32;
                             let win_y = window_pos.y as f32;
 
-                            // Traffic light button geometry
+                            // Traffic light buttons as rounded squares (confirmed to work)
                             let btn_size = 14.0_f32;
                             let btn_spacing = 8.0_f32;
                             let left_margin = 12.0_f32;
@@ -434,7 +434,7 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
                                     egui::Color32::from_rgb(40, 200, 64),  // Green
                                 ]
                             } else {
-                                [egui::Color32::from_rgb(80, 80, 80); 3]
+                                [egui::Color32::from_rgb(75, 75, 75); 3]
                             };
 
                             for (i, btn_color) in colors.iter().enumerate() {
@@ -468,8 +468,33 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
             state.windows[idx].toplevel.send_close();
         }
         
-        // RENDER ORDER: Background elements first (rendered at the back)
-        // 1. Title Bar Backgrounds (solid gray - at the very back)
+        // RENDER ORDER: 
+        // Based on commit 1f6c1a5, the elements are rendered in REVERSE order 
+        // or a specific order where the FIRST element in the list is ON TOP.
+        
+        // 1. Egui Overlay (FRONT)
+        match egui_element {
+            Ok(egui_tex) => {
+                elements.push(CustomRenderElement::Egui(egui_tex));
+            }
+            Err(err) => {
+                error!("Failed to render egui overlay: {:?}", err);
+            }
+        }
+
+        // 2. Client Surfaces (MIDDLE)
+        for window in &state.windows {
+            let surface_location = Point::from((window.location.x, window.location.y + TITLE_BAR_HEIGHT));
+            elements.extend(render_elements_from_surface_tree::<GlowRenderer, CustomRenderElement>(
+                renderer, 
+                window.toplevel.wl_surface(), 
+                surface_location, 
+                1.0, 1.0, 
+                Kind::Unspecified
+            ));
+        }
+
+        // 3. Title Bar Backgrounds (BACK)
         for window in &state.windows {
             let surface_size = window.toplevel.current_state().size.unwrap_or((800, 600).into());
             let bar_rect = smithay::utils::Rectangle::new(window.location, (surface_size.w, TITLE_BAR_HEIGHT).into());
@@ -481,37 +506,7 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
                 Kind::Unspecified
             )));
         }
-        
-        // 2. Client Surfaces (shifted down by TITLE_BAR_HEIGHT)
-        for window in &state.windows {
-            let surface_location = Point::from((window.location.x, window.location.y + TITLE_BAR_HEIGHT));
-            elements.extend(render_elements_from_surface_tree::<GlowRenderer, CustomRenderElement>(
-                renderer, 
-                window.toplevel.wl_surface(), 
-                surface_location, 
-                1.0, 1.0, 
-                Kind::Unspecified
-            ));
-        }
-        
-        // 3. Egui Overlay (on top of everything)
-        match egui_element {
-            Ok(egui_tex) => {
-                elements.push(CustomRenderElement::Egui(egui_tex));
-            }
-            Err(err) => {
-                error!("Failed to render egui overlay: {:?}", err);
-            }
-        }
 
-        // TEST: Draw a blue square at (50, 50) to verify smithay rendering
-        elements.push(CustomRenderElement::Solid(SolidColorRenderElement::new(
-            smithay::backend::renderer::element::Id::new(),
-            Rectangle::new((50, 50).into(), (50, 50).into()),
-            smithay::backend::renderer::utils::CommitCounter::default(),
-            [0.0, 0.0, 1.0, 1.0], // Blue
-            Kind::Unspecified
-        )));
         
         if let Err(e) = compositor.render_frame::<GlowRenderer, CustomRenderElement>(renderer, &elements, color, smithay::backend::drm::compositor::FrameFlags::empty()) {
 
