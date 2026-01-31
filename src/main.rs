@@ -215,10 +215,7 @@ fn handle_input_event(state: &mut FloraState, event: FloraInputEvent) {
         FloraInputEvent::PointerMotion { delta, time } => {
             state.pointer_location += delta;
             clamp_pointer(state);
-            
-            let p = state.pointer_location.to_logical(1.0);
-            state.egui_state.handle_pointer_motion((p.x as i32, p.y as i32).into());
-            
+            forward_pointer_to_egui(state);
             update_grab(state);
             forward_pointer_motion(state, time);
             state.needs_redraw = true;
@@ -232,9 +229,7 @@ fn handle_input_event(state: &mut FloraState, event: FloraInputEvent) {
                 }
             }
             
-            let p = state.pointer_location.to_logical(1.0);
-            state.egui_state.handle_pointer_motion((p.x as i32, p.y as i32).into());
-            
+            forward_pointer_to_egui(state);
             update_grab(state);
             forward_pointer_motion(state, time);
             state.needs_redraw = true;
@@ -244,6 +239,11 @@ fn handle_input_event(state: &mut FloraState, event: FloraInputEvent) {
             state.needs_redraw = true;
         }
     }
+}
+
+fn forward_pointer_to_egui(state: &mut FloraState) {
+    let p = state.pointer_location.to_logical(1.0);
+    state.egui_state.handle_pointer_motion((p.x as i32, p.y as i32).into());
 }
 
 fn clamp_pointer(state: &mut FloraState) {
@@ -299,14 +299,17 @@ fn handle_pointer_button(state: &mut FloraState, button: u32, pressed: bool, tim
     let serial = SERIAL_COUNTER.next_serial();
     let state_enum = if pressed { smithay::backend::input::ButtonState::Pressed } else { smithay::backend::input::ButtonState::Released };
     
-    // Forward to egui
+    // Forward to egui only for known buttons
     let mb = match button {
-        0x110 => smithay::backend::input::MouseButton::Left,
-        0x111 => smithay::backend::input::MouseButton::Right,
-        0x112 => smithay::backend::input::MouseButton::Middle,
-        _ => smithay::backend::input::MouseButton::Left,
+        0x110 => Some(smithay::backend::input::MouseButton::Left),
+        0x111 => Some(smithay::backend::input::MouseButton::Right),
+        0x112 => Some(smithay::backend::input::MouseButton::Middle),
+        _ => None,
     };
-    state.egui_state.handle_pointer_button(mb, pressed);
+    
+    if let Some(mouse_button) = mb {
+        state.egui_state.handle_pointer_button(mouse_button, pressed);
+    }
     
     // Intercept if egui wants it
     if state.egui_state.wants_pointer() {
@@ -469,8 +472,13 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
             1.0,
         );
         
-        if let Ok(egui_tex) = egui_element {
-            elements.push(CustomRenderElement::Egui(egui_tex));
+        match egui_element {
+            Ok(egui_tex) => {
+                elements.push(CustomRenderElement::Egui(egui_tex));
+            }
+            Err(err) => {
+                error!("Failed to render egui overlay: {:?}", err);
+            }
         }
         
         // Execute pending actions from egui
@@ -497,7 +505,7 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
             elements.push(CustomRenderElement::Solid(SolidColorRenderElement::new(
                 window.bar_id.clone(),
                 bar_rect,
-                smithay::backend::renderer::utils::CommitCounter::default(),
+                window.bar_commit_counter.clone(),
                 [0.15, 0.15, 0.15, 1.0],
                 Kind::Unspecified
             )));

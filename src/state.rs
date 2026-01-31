@@ -35,15 +35,12 @@ impl ClientData for FloraClientData {}
 pub struct Window {
     pub toplevel: ToplevelSurface,
     pub location: Point<i32, Physical>,
-    pub title_bar_height: i32,
     pub bar_id: smithay::backend::renderer::element::Id,
+    pub bar_commit_counter: smithay::backend::renderer::utils::CommitCounter,
 }
 
 
 pub const TITLE_BAR_HEIGHT: i32 = 30;
-pub const BUTTON_SIZE: i32 = 12;
-pub const BUTTON_SPACING: i32 = 8;
-pub const MARGIN: i32 = 10;
 
 
 
@@ -169,8 +166,8 @@ impl XdgShellHandler for FloraState {
         self.windows.push(Window { 
             toplevel: surface, 
             location: (100, 100).into(),
-            title_bar_height: TITLE_BAR_HEIGHT,
             bar_id: smithay::backend::renderer::element::Id::new(),
+            bar_commit_counter: smithay::backend::renderer::utils::CommitCounter::default(),
         });
         if let Some(keyboard) = self.seat.get_keyboard() {
             keyboard.set_focus(self, Some(wl_surface.clone()), smithay::utils::SERIAL_COUNTER.next_serial());
