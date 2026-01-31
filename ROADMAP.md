@@ -8,26 +8,28 @@ Flora is now a functional Wayland compositor capable of:
 - Basic XDG shell support
 
 ## Phase 1: Core Input Handling (High Priority)
-- [ ] **Keyboard Input**
-  - Forward keyboard events to focused client
-  - Handle key repeat
-  - Implement keyboard focus tracking
+- [x] **Keyboard Input**
+  - [x] Forward keyboard events to focused client
+  - [x] Set `needs_redraw = true` for responsive typing
+  - [x] Implement keyboard focus tracking
+  - [ ] Handle key repeat (Smithay's `KeyboardHandler`)
 
-- [ ] **Pointer/Mouse Input**
-  - Forward mouse events to client under cursor
-  - Implement pointer focus tracking
-  - Handle cursor image updates from clients
+- [x] **Pointer/Mouse Input**
+  - [x] Forward mouse events to client under cursor
+  - [x] Support Relative Pointer Motion
+  - [x] Support Absolute Pointer Motion (Tablet/VM mode)
+  - [x] Implement pointer focus tracking (basic hit test)
+  - [ ] Handle cursor image updates from clients
 
 ## Phase 2: Window Management (High Priority)
-- [ ] **Window Positioning**
-  - Track window positions
-  - Support window move operations
-  - Handle client resize requests
-
-- [ ] **Window Focus**
-  - Click-to-focus support
-  - Visual focus indicators
-  - Focus change notifications
+- [x] **Window Positioning**
+  - [x] Track window positions
+  - [x] Support window move operations (basic grab)
+  - [ ] Handle client resize requests
+- [x] **Window Focus**
+  - [x] Click-to-focus support
+  - [ ] Visual focus indicators
+  - [ ] Focus change notifications
 
 - [ ] **Multiple Windows**
   - Window stacking/z-order
