@@ -28,7 +28,7 @@ use std::{time::Duration, rc::Rc, cell::RefCell, os::unix::io::{AsRawFd, Borrowe
 use tracing::{info, warn, error};
 use anyhow::Result;
 
-use crate::state::{FloraState, FloraClientData, CompositorClientState, TITLE_BAR_HEIGHT, BUTTON_SIZE, MARGIN};
+use crate::state::{FloraState, FloraClientData, CompositorClientState, TITLE_BAR_HEIGHT};
 use crate::input::{FloraInputEvent, spawn_input_thread};
 use crate::backend::init_graphics;
 
@@ -215,6 +215,10 @@ fn handle_input_event(state: &mut FloraState, event: FloraInputEvent) {
         FloraInputEvent::PointerMotion { delta, time } => {
             state.pointer_location += delta;
             clamp_pointer(state);
+            
+            let p = state.pointer_location.to_logical(1.0);
+            state.egui_state.handle_pointer_motion((p.x as i32, p.y as i32).into());
+            
             update_grab(state);
             forward_pointer_motion(state, time);
             state.needs_redraw = true;
@@ -227,6 +231,10 @@ fn handle_input_event(state: &mut FloraState, event: FloraInputEvent) {
                     state.pointer_location.y = location.y * size.h as f64;
                 }
             }
+            
+            let p = state.pointer_location.to_logical(1.0);
+            state.egui_state.handle_pointer_motion((p.x as i32, p.y as i32).into());
+            
             update_grab(state);
             forward_pointer_motion(state, time);
             state.needs_redraw = true;
@@ -291,6 +299,21 @@ fn handle_pointer_button(state: &mut FloraState, button: u32, pressed: bool, tim
     let serial = SERIAL_COUNTER.next_serial();
     let state_enum = if pressed { smithay::backend::input::ButtonState::Pressed } else { smithay::backend::input::ButtonState::Released };
     
+    // Forward to egui
+    let mb = match button {
+        0x110 => smithay::backend::input::MouseButton::Left,
+        0x111 => smithay::backend::input::MouseButton::Right,
+        0x112 => smithay::backend::input::MouseButton::Middle,
+        _ => smithay::backend::input::MouseButton::Left,
+    };
+    state.egui_state.handle_pointer_button(mb, pressed);
+    
+    // Intercept if egui wants it
+    if state.egui_state.wants_pointer() {
+        state.needs_redraw = true;
+        return;
+    }
+    
     if pressed {
         let hit = state.windows.iter().enumerate().rev().find_map(|(i, w)| {
             let px = state.pointer_location.x.round() as i32;
@@ -303,16 +326,8 @@ fn handle_pointer_button(state: &mut FloraState, button: u32, pressed: bool, tim
             if relative_x >= 0 && relative_x < surface_size.w && 
                relative_y >= 0 && relative_y < (TITLE_BAR_HEIGHT + surface_size.h) {
                 
-                // Button handling (Close)
                 if relative_y < TITLE_BAR_HEIGHT {
-                    let btn_y_start = (TITLE_BAR_HEIGHT - BUTTON_SIZE) / 2;
-                    if relative_y >= btn_y_start && relative_y < (btn_y_start + BUTTON_SIZE) {
-                        let red_x = MARGIN;
-                        if relative_x >= red_x && relative_x < (red_x + BUTTON_SIZE) {
-                            info!("🔴 TitleBar: Close clicked");
-                            w.toplevel.send_close();
-                        }
-                    }
+                    // Title bar clicked - potential for grab
                 }
                 
                 let w_loc_f = Point::<f64, Physical>::from((w.location.x as f64, w.location.y as f64));
@@ -370,6 +385,8 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
             (idx, w.location, surface_size, is_focused)
         }).collect();
         
+        let mut pending_close = None;
+        
         // Render egui UI overlay
         let egui_element = state.egui_state.render(
             |ctx| {
@@ -399,22 +416,18 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
                             // Hover icons (macOS style)
                             let icons = ["✕", "—", "＋"];
                             
-                            // Calculate button positions explicitly
+                            // Tweak geometry
                             let btn_radius = 6.0_f32;
                             let btn_spacing = 8.0_f32;
                             let left_margin = 12.0_f32;
                             let center_y = window_pos.y as f32 + (TITLE_BAR_HEIGHT as f32 / 2.0);
                             
-                            // Button area for hover detection
-                            let button_area_start = egui::pos2(
-                                window_pos.x as f32 + left_margin - btn_radius,
-                                center_y - btn_radius
+                            // Group rect for unified hover feel
+                            let group_rect = egui::Rect::from_min_max(
+                                egui::pos2(window_pos.x as f32 + left_margin - 4.0, center_y - 10.0),
+                                egui::pos2(window_pos.x as f32 + left_margin + 50.0, center_y + 10.0)
                             );
-                            let button_area = egui::Rect::from_min_size(
-                                button_area_start,
-                                egui::vec2((btn_radius * 2.0) * 3.0 + btn_spacing * 2.0, btn_radius * 2.0),
-                            );
-                            let is_hovering_area = ui.rect_contains_pointer(button_area);
+                            let is_hovering_group = ui.rect_contains_pointer(group_rect);
                             
                             for (i, btn_color) in colors.iter().enumerate() {
                                 // Calculate center position for each button
@@ -426,23 +439,25 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
                                 ui.painter().circle_filled(center, btn_radius, *btn_color);
                                 
                                 // Draw hover icon when hovering and focused
-                                if is_hovering_area && *is_focused {
-                                    let icon_color = egui::Color32::from_rgba_premultiplied(0, 0, 0, 180);
+                                if is_hovering_group && *is_focused {
+                                    let icon_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 160);
                                     ui.painter().text(
                                         center,
                                         egui::Align2::CENTER_CENTER,
                                         icons[i],
-                                        egui::FontId::proportional(8.0),
+                                        egui::FontId::proportional(8.5),
                                         icon_color,
                                     );
                                 }
                                 
-                                // Create invisible button for click detection
-                                let btn_rect = egui::Rect::from_center_size(center, egui::vec2(btn_radius * 2.0, btn_radius * 2.0));
+                                // Create interaction area for click detection
+                                let btn_rect = egui::Rect::from_center_size(center, egui::vec2(15.0, 15.0));
                                 let response = ui.allocate_rect(btn_rect, egui::Sense::click());
                                 
-                                if response.clicked() && *is_focused && i == 0 {
-                                    // Close button clicked - will be handled
+                                if response.clicked() && *is_focused {
+                                    if i == 0 {
+                                        pending_close = Some(*idx);
+                                    }
                                 }
                             }
                         });
@@ -456,6 +471,11 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
         
         if let Ok(egui_tex) = egui_element {
             elements.push(CustomRenderElement::Egui(egui_tex));
+        }
+        
+        // Execute pending actions from egui
+        if let Some(idx) = pending_close {
+            state.windows[idx].toplevel.send_close();
         }
         
         // Draw client surfaces and title bar backgrounds
