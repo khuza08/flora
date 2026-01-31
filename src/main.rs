@@ -120,7 +120,11 @@ fn main() -> Result<()> {
                     state._gbm_device = Some(gbm);
                     state._egl_display = Some(egl);
                     state.renderer = Some(renderer);
+                    
+                    // Advertise the output to clients
+                    output.create_global::<FloraState>(&state.display_handle);
                     state.output = Some(output);
+                    
                     state.compositor = Some(compositor);
                     state._drm_device = Some(drm_device);
                     state.needs_redraw = true;
