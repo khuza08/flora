@@ -10,17 +10,17 @@ use smithay::{
             element::{Kind, surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement}, solid::SolidColorRenderElement, texture::TextureRenderElement},
         },
         drm::DrmEvent,
+        winit::WinitEvent,
     },
     reexports::{
         calloop::{EventLoop, Interest, Mode, PostAction, generic::Generic, channel::Event},
         wayland_server::Display,
     },
-    utils::{SERIAL_COUNTER, Point, Physical, Logical, Rectangle},
-    wayland::{
-        compositor::{with_surface_tree_downward, TraversalAction, SurfaceAttributes},
-    },
     input::keyboard::FilterResult,
+    utils::{SERIAL_COUNTER, Point, Physical, Logical, Rectangle, Size},
+    wayland::compositor::{with_surface_tree_downward, TraversalAction, SurfaceAttributes},
 };
+use smithay_egui::EguiState;
 
 use smithay::backend::renderer::gles::GlesTexture;
 
@@ -28,9 +28,9 @@ use std::{time::Duration, rc::Rc, cell::RefCell, os::unix::io::{AsRawFd, Borrowe
 use tracing::{info, warn, error};
 use anyhow::Result;
 
-use crate::state::{FloraState, FloraClientData, CompositorClientState, TITLE_BAR_HEIGHT};
+use crate::state::{FloraState, FloraClientData, CompositorClientState, TITLE_BAR_HEIGHT, BackendData};
 use crate::input::{FloraInputEvent, spawn_input_thread};
-use crate::backend::init_graphics;
+use crate::backend::{drm::init_drm_graphics, winit::init_winit_graphics};
 
 smithay::backend::renderer::element::render_elements! {
     pub CustomRenderElement<=GlowRenderer>;
@@ -43,10 +43,7 @@ fn main() -> Result<()> {
     tracing_subscriber::fmt().init();
     info!("Flora: Starting macOS-like Compositor...");
 
-    // 1. TTY Graphics Mode setup with restoration on exit
-    let tty_fd = setup_tty_graphics()?;
-    
-    // 2. Setup Event Loop
+    // 1. Setup Event Loop
     let mut event_loop: EventLoop<FloraState> = EventLoop::try_new()?;
     let handle = event_loop.handle();
 
@@ -113,11 +110,82 @@ fn main() -> Result<()> {
     }).expect("Failed to insert input source");
 
     info!("Flora: Entering main event loop...");
+    
+    // Check if we should use Winit (nested) or DRM (native)
+    let use_winit = std::env::var("WAYLAND_DISPLAY").is_ok() || std::env::var("DISPLAY").is_ok();
+    
+    let mut tty_file: Option<std::fs::File> = None;
+    if use_winit {
+        match init_winit_graphics() {
+            Ok((backend, winit_event_loop, output)) => {
+                // Advertise the output
+                output.create_global::<FloraState>(&state.display_handle);
+                state.output = Some(output.clone());
+                
+                state.backend_data = BackendData::Winit { 
+                    backend,
+                    damage_tracker: smithay::backend::renderer::damage::OutputDamageTracker::from_output(&output),
+                };
+                state.needs_redraw = true;
+                info!("Winit (Nested) initialized successfully!");
+
+                // Insert winit event loop into calloop
+                handle.insert_source(winit_event_loop, |event, _, state| {
+                    match event {
+                        WinitEvent::Resized { size, .. } => {
+                            info!("Winit Resized: {:?}", size);
+                            if let Some(output) = state.output.as_ref() {
+                                let mode = smithay::output::Mode { size, refresh: 60_000 };
+                                output.change_current_state(Some(mode), None, None, None);
+                            }
+                            state.needs_redraw = true;
+                        }
+                        WinitEvent::Input(_input_event) => {
+                            // Forward input to handle_input_event
+                            // Note: Winit input needs conversion to FloraInputEvent or handled directly
+                            // Simplified for now: just trigger redraw on input
+                            state.needs_redraw = true;
+                            
+                            // Map Winit events to FloraInputEvent if possible
+                            // For now, let's just use the winit source directly to update state
+                        }
+                        WinitEvent::Redraw => {
+                            state.needs_redraw = true;
+                        }
+                        WinitEvent::CloseRequested => {
+                            state.should_stop = true;
+                        }
+                        _ => {}
+                    }
+                }).expect("Failed to insert Winit event loop");
+            }
+            Err(e) => {
+                error!("Failed to initialize Winit backend: {}", e);
+            }
+        }
+    } else {
+        // DRM setup
+        tty_file = setup_tty_graphics()?;
+        let udev = UdevBackend::new("seat0")?;
+        for (_device_id, dev_path) in udev.device_list() {
+            if dev_path.to_string_lossy().contains("card") || dev_path.to_string_lossy().contains("render") {
+                state.drm_devices.push(dev_path.to_path_buf());
+            }
+        }
+        handle.insert_source(udev, |event, _, state| {
+            if let UdevEvent::Added { path, .. } = event {
+                if path.to_string_lossy().contains("card") || path.to_string_lossy().contains("render") {
+                    state.drm_devices.push(path);
+                }
+            }
+        }).map_err(|_| anyhow::anyhow!("Failed to insert udev source"))?;
+    }
+
     while !state.should_stop {
-        // A. Graphics Initialization
-        if state.renderer.is_none() && !state.drm_devices.is_empty() {
+        // A. DRM Graphics Initialization (if using DRM and not yet initialized)
+        if !use_winit && state.renderer.is_none() && !state.drm_devices.is_empty() {
             let device_path = state.drm_devices.pop().unwrap();
-            match init_graphics(&device_path) {
+            match init_drm_graphics(&device_path) {
                 Ok((gbm, egl, renderer, output, compositor, drm_device, notifier)) => {
                     handle.insert_source(notifier, |event, _, state| {
                         match event {
@@ -126,18 +194,15 @@ fn main() -> Result<()> {
                         }
                     }).expect("Failed to insert DRM notifier");
 
-                    state._gbm_device = Some(gbm);
-                    state._egl_display = Some(egl);
                     state.renderer = Some(renderer);
                     
                     // Advertise the output to clients
                     output.create_global::<FloraState>(&state.display_handle);
                     state.output = Some(output);
                     
-                    state.compositor = Some(compositor);
-                    state._drm_device = Some(drm_device);
+                    state.backend_data = BackendData::Drm { gbm, egl, compositor, device: drm_device };
                     state.needs_redraw = true;
-                    info!("Screen output initialized successfully!");
+                    info!("DRM (Native) initialized successfully!");
 
                     if !input_initialized {
                         spawn_input_thread(input_sender.clone());
@@ -165,7 +230,7 @@ fn main() -> Result<()> {
 
     // 9. Shutdown & Cleanup
     info!("Flora: Shutting down...");
-    restore_tty(tty_fd);
+    restore_tty(tty_file);
     Ok(())
 }
 
@@ -397,166 +462,212 @@ fn handle_pointer_button(state: &mut FloraState, button: u32, pressed: bool, tim
     }
 }
 
-fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports::wayland_server::Display<FloraState>>>) -> Result<()> {
+fn render_frame(state: &mut FloraState, display: &Rc<RefCell<Display<FloraState>>>) -> Result<()> {
     let scale = get_output_scale(state);
-    if let (Some(compositor), Some(renderer)) = (state.compositor.as_mut(), state.renderer.as_mut()) {
-        let color = [0.2, 0.2, 0.2, 1.0];
-        let mut elements: Vec<CustomRenderElement> = Vec::new();
-        
-        // Get output geometry for egui
-        let output_size = state.output.as_ref()
-            .and_then(|o| o.current_mode())
-            .map(|m| m.size)
-            .unwrap_or((1280, 800).into());
-        
-        // Collect window data for egui (to avoid borrow issues)
-        let window_data: Vec<_> = state.windows.iter().enumerate().map(|(idx, w)| {
-            let surface_size = w.toplevel.current_state().size.unwrap_or((800, 600).into());
-            let is_focused = state.seat.get_keyboard()
-                .map(|kb| kb.current_focus().map(|f| f == *w.toplevel.wl_surface()).unwrap_or(false))
-                .unwrap_or(false);
-            (idx, w.location, surface_size, is_focused, w.bar_id.clone())
-        }).collect();
-        
-        let mut pending_close: Option<usize> = None;
-        
-        // Render egui UI overlay
-        let egui_element = state.egui_state.render(
-            |ctx| {
-                egui::CentralPanel::default()
-                    .frame(egui::Frame::NONE)
-                    .show(ctx, |ui| {
-                        for (idx, window_pos, _surface_size, is_focused, bar_id) in &window_data {
-                            let win_x = window_pos.x as f32;
-                            let win_y = window_pos.y as f32;
-
-                            // Traffic light button geometry
-                            let btn_radius = 6.0_f32;
-                            let btn_spacing = 8.0_f32;
-                            let left_margin = 12.0_f32;
-                            let center_y = win_y + (TITLE_BAR_HEIGHT as f32 / 2.0);
-                            
-                            // Button area for hover detection
-                            let btn_group_width = (btn_radius * 2.0) * 3.0 + btn_spacing * 2.0;
-                            let btn_group_rect = egui::Rect::from_min_size(
-                                egui::pos2(win_x + left_margin - btn_radius, center_y - btn_radius),
-                                egui::vec2(btn_group_width, btn_radius * 2.0)
-                            );
-                            let is_hovering_group = ui.rect_contains_pointer(btn_group_rect);
-
-                            let colors = if *is_focused {
-                                [
-                                    egui::Color32::from_rgb(255, 95, 87),  // Red
-                                    egui::Color32::from_rgb(255, 189, 46), // Yellow
-                                    egui::Color32::from_rgb(40, 200, 64),  // Green
-                                ]
-                            } else {
-                                [egui::Color32::from_rgb(75, 75, 75); 3]
-                            };
-
-                            let icons = ["✕", "—", "＋"];
-
-                            for (i, btn_color) in colors.iter().enumerate() {
-                                let center_x = win_x + left_margin + btn_radius + (i as f32 * (btn_radius * 2.0 + btn_spacing));
-                                let center = egui::pos2(center_x, center_y);
-                                
-                                // Draw circular button
-                                ui.painter().circle_filled(center, btn_radius, *btn_color);
-
-                                // Draw icon when hovering
-                                if is_hovering_group && *is_focused {
-                                    ui.painter().text(
-                                        center,
-                                        egui::Align2::CENTER_CENTER,
-                                        icons[i],
-                                        egui::FontId::proportional(8.0),
-                                        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 160)
-                                    );
-                                }
-
-                                // Click handling
-                                let rect = egui::Rect::from_center_size(center, egui::vec2(btn_radius * 2.0, btn_radius * 2.0));
-                                let response = ui.interact(rect, egui::Id::new(("btn", bar_id, i)), egui::Sense::click());
-                                if response.clicked() && *is_focused && i == 0 {
-                                    pending_close = Some(*idx);
-                                }
-                            }
-                        }
-                    });
-            },
-            renderer,
-            Rectangle::new((0, 0).into(), (output_size.w, output_size.h).into()),
-            scale,
-            scale as f32,
-        );
-        
-        // Execute pending actions from egui
-        if let Some(idx) = pending_close {
-            state.windows[idx].toplevel.send_close();
+    
+    // 1. Get output size
+    let output_size = match &state.backend_data {
+        BackendData::Drm { .. } => {
+            state.output.as_ref()
+                .and_then(|o| o.current_mode())
+                .map(|m| m.size)
+                .unwrap_or((1280, 800).into())
         }
-        
-        // RENDER ORDER: 
-        // Based on commit 1f6c1a5, the elements are rendered in REVERSE order 
-        // or a specific order where the FIRST element in the list is ON TOP.
-        
-        // 1. Egui Overlay (FRONT)
-        match egui_element {
-            Ok(egui_tex) => {
-                elements.push(CustomRenderElement::Egui(egui_tex));
+        BackendData::Winit { backend, .. } => {
+            backend.window_size()
+        }
+        BackendData::None => return Ok(()),
+    };
+
+    let color = [0.1, 0.1, 0.1, 1.0];
+
+    // 2. Collect immutable window data for egui
+    let focused_surface = state.seat.get_keyboard().and_then(|kb| kb.current_focus());
+    let window_data: Vec<(usize, Point<i32, Physical>, Size<i32, Physical>, bool, smithay::backend::renderer::element::Id)> = state.windows.iter().enumerate().map(|(idx, w)| {
+        let surface_size = w.toplevel.current_state().size.unwrap_or((800, 600).into());
+        let surface_size_physical = Size::from((surface_size.w as i32, surface_size.h as i32));
+        let is_focused = focused_surface.as_ref().map(|f| f == w.toplevel.wl_surface()).unwrap_or(false);
+        (idx, w.location, surface_size_physical, is_focused, w.bar_id.clone())
+    }).collect();
+
+    // 3. Render to backend
+    match &mut state.backend_data {
+        BackendData::Drm { compositor, .. } => {
+            let mut renderer = state.renderer.as_mut().ok_or_else(|| anyhow::anyhow!("No renderer"))?;
+            
+            let (elements, pending_close) = gather_elements(
+                &mut state.egui_state, 
+                &state.windows, 
+                &window_data[..],
+                &mut renderer, 
+                output_size, 
+                scale
+            )?;
+
+            if let Some(idx) = pending_close {
+                state.windows[idx].toplevel.send_close();
             }
-            Err(err) => {
-                error!("Failed to render egui overlay: {:?}", err);
+
+            if let Err(e) = compositor.render_frame::<GlowRenderer, CustomRenderElement>(&mut renderer, &elements, color, smithay::backend::drm::compositor::FrameFlags::empty()) {
+                if format!("{:?}", e) != "EmptyFrame" {
+                    error!("Rendering: render_frame failed: {:?}", e);
+                }
+            }
+            if let Err(e) = compositor.commit_frame() {
+                if format!("{:?}", e) != "EmptyFrame" {
+                    error!("Rendering: commit_frame failed: {:?}", e);
+                }
             }
         }
+        BackendData::Winit { backend, damage_tracker } => {
+            let buffer_age = backend.buffer_age().unwrap_or(0);
+            
+            let res = (|| -> Result<(Vec<CustomRenderElement>, Option<usize>)> {
+                let (renderer, mut framebuffer) = backend.bind().map_err(|e| anyhow::anyhow!("Bind failed: {}", e))?;
+                
+                let (elements, pending_close) = gather_elements(
+                    &mut state.egui_state, 
+                    &state.windows, 
+                    &window_data[..],
+                    renderer, 
+                    output_size, 
+                    scale
+                )?;
 
-        // 2. Client Surfaces (MIDDLE)
-        for window in &state.windows {
-            let surface_location = Point::from((window.location.x, window.location.y + TITLE_BAR_HEIGHT));
-            elements.extend(render_elements_from_surface_tree::<GlowRenderer, CustomRenderElement>(
-                renderer, 
-                window.toplevel.wl_surface(), 
-                surface_location, 
-                1.0, 1.0, 
-                Kind::Unspecified
-            ));
-        }
-
-        // 3. Title Bar Backgrounds (BACK)
-        for window in &state.windows {
-            let surface_size = window.toplevel.current_state().size.unwrap_or((800, 600).into());
-            let bar_rect = smithay::utils::Rectangle::new(window.location, (surface_size.w, TITLE_BAR_HEIGHT).into());
-            elements.push(CustomRenderElement::Solid(SolidColorRenderElement::new(
-                window.bar_id.clone(),
-                bar_rect,
-                window.bar_commit_counter.clone(),
-                [0.15, 0.15, 0.15, 1.0],
-                Kind::Unspecified
-            )));
-        }
-
-        
-        if let Err(e) = compositor.render_frame::<GlowRenderer, CustomRenderElement>(renderer, &elements, color, smithay::backend::drm::compositor::FrameFlags::empty()) {
-
-            if format!("{:?}", e) != "EmptyFrame" {
-                error!("Rendering: render_frame failed: {:?}", e);
+                if pending_close.is_none() {
+                    damage_tracker.render_output(
+                        renderer,
+                        &mut framebuffer,
+                        buffer_age,
+                        &elements,
+                        color,
+                    ).map_err(|e| anyhow::anyhow!("Winit render failed: {}", e))?;
+                }
+                
+                Ok((elements, pending_close))
+            })();
+            
+            match res {
+                Ok((_, pending_close_idx)) => {
+                    if let Some(idx) = pending_close_idx {
+                        state.windows[idx].toplevel.send_close();
+                    }
+                    if let Err(e) = backend.submit(None) {
+                        error!("Winit Submit Error: {:?}", e);
+                    }
+                }
+                Err(e) => {
+                    error!("Winit Rendering Error: {:?}", e);
+                }
             }
         }
-        
-        let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u32;
-        for window in &state.windows {
-            with_surface_tree_downward(window.toplevel.wl_surface(), (), |_, _, _| TraversalAction::DoChildren(()), |_, states, _| {
-                let mut guard = states.cached_state.get::<SurfaceAttributes>();
-                for callback in guard.current().frame_callbacks.drain(..) { callback.done(time); }
-            }, |_, _, _| true);
-        }
-
-        if let Err(e) = compositor.commit_frame() {
-            if format!("{:?}", e) != "EmptyFrame" {
-                error!("Rendering: commit_frame failed: {:?}", e);
-            }
-        }
-
-        let _ = display.borrow_mut().flush_clients();
+        BackendData::None => {}
     }
+    
+    // 6. Send frame callbacks
+    let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u32;
+    for window in &state.windows {
+        with_surface_tree_downward(window.toplevel.wl_surface(), (), |_, _, _| TraversalAction::DoChildren(()), |_, states, _| {
+            let mut guard = states.cached_state.get::<SurfaceAttributes>();
+            for callback in guard.current().frame_callbacks.drain(..) { 
+                let c: smithay::reexports::wayland_server::protocol::wl_callback::WlCallback = callback;
+                let _ = c.done(time); 
+            }
+        }, |_, _, _| true);
+    }
+
+    let _ = display.borrow_mut().flush_clients();
+    state.needs_redraw = false;
     Ok(())
+}
+
+fn gather_elements(
+    egui_state: &mut EguiState,
+    windows: &[crate::state::Window],
+    window_data: &[(usize, Point<i32, Physical>, smithay::utils::Size<i32, Physical>, bool, smithay::backend::renderer::element::Id)],
+    renderer: &mut GlowRenderer,
+    output_size: smithay::utils::Size<i32, Physical>,
+    scale: f64,
+) -> Result<(Vec<CustomRenderElement>, Option<usize>)> {
+    let mut elements = Vec::new();
+    let mut pending_close = None;
+
+    let egui_element = egui_state.render(
+        |ctx| {
+            egui::Area::new(egui::Id::new("overlay"))
+                .anchor(egui::Align2::LEFT_TOP, egui::vec2(0.0, 0.0))
+                .show(ctx, |ui| {
+                    ui.label(egui::RichText::new("Flora Compositor").color(egui::Color32::WHITE).size(20.0));
+
+                    for (idx, pos, size, is_focused, bar_id) in window_data {
+                        egui::Window::new(format!("window_{}", idx))
+                            .id(egui::Id::new(bar_id))
+                            .fixed_pos(egui::pos2(pos.x as f32, pos.y as f32))
+                            .fixed_size(egui::vec2(size.w as f32, TITLE_BAR_HEIGHT as f32))
+                            .title_bar(false)
+                            .frame(egui::Frame::NONE.fill(egui::Color32::from_rgba_unmultiplied(20, 20, 20, 240)))
+                            .show(ui.ctx(), |ui| {
+                                ui.horizontal(|ui| {
+                                    let btn_radius = 6.0;
+                                    let spacing = 8.0;
+                                    let start_x = 10.0;
+                                    let center_y = (TITLE_BAR_HEIGHT as f32) / 2.0;
+
+                                    for i in 0..3 {
+                                        let color = match i {
+                                            0 => egui::Color32::from_rgb(255, 95, 87),
+                                            1 => egui::Color32::from_rgb(255, 189, 46),
+                                            2 => egui::Color32::from_rgb(40, 201, 64),
+                                            _ => egui::Color32::GRAY,
+                                        };
+                                        let center = egui::pos2(start_x + i as f32 * (btn_radius * 2.0 + spacing), center_y);
+                                        ui.painter().circle_filled(center, btn_radius, color);
+
+                                        let rect = egui::Rect::from_center_size(center, egui::vec2(btn_radius * 2.0, btn_radius * 2.0));
+                                        let response = ui.interact(rect, egui::Id::new(("btn", bar_id, i)), egui::Sense::click());
+                                        if response.clicked() && *is_focused && i == 0 {
+                                            pending_close = Some(*idx);
+                                        }
+                                    }
+                                });
+                            });
+                    }
+                });
+        },
+        renderer,
+        Rectangle::new((0, 0).into(), (output_size.w, output_size.h).into()),
+        scale,
+        scale as f32,
+    );
+
+    // 2. Gather elements
+    match egui_element {
+        Ok(egui_tex) => elements.push(CustomRenderElement::Egui(egui_tex)),
+        Err(err) => error!("Failed to render egui overlay: {:?}", err),
+    }
+
+    for window in windows {
+        let surface_location = Point::from((window.location.x, window.location.y + TITLE_BAR_HEIGHT));
+        elements.extend(render_elements_from_surface_tree::<GlowRenderer, CustomRenderElement>(
+            renderer, 
+            window.toplevel.wl_surface(), 
+            surface_location, 
+            1.0, 1.0, 
+            Kind::Unspecified
+        ));
+    }
+
+    for window in windows {
+        let surface_size = window.toplevel.current_state().size.unwrap_or((800, 600).into());
+        let bar_rect = Rectangle::new(window.location, (surface_size.w, TITLE_BAR_HEIGHT).into());
+        elements.push(CustomRenderElement::Solid(SolidColorRenderElement::new(
+            window.bar_id.clone(),
+            bar_rect,
+            window.bar_commit_counter.clone(),
+            [0.15, 0.15, 0.15, 1.0],
+            Kind::Unspecified
+        )));
+    }
+
+    Ok((elements, pending_close))
 }

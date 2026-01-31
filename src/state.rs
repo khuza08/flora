@@ -16,6 +16,7 @@ use smithay::{
         drm::exporter::gbm::GbmFramebufferExporter,
         egl::EGLDisplay,
         renderer::glow::GlowRenderer,
+        winit::WinitGraphicsBackend,
     },
 };
 
@@ -43,6 +44,19 @@ pub struct Window {
 pub const TITLE_BAR_HEIGHT: i32 = 30;
 
 
+pub enum BackendData {
+    Drm {
+        gbm: smithay::backend::allocator::gbm::GbmDevice<DrmDeviceFd>,
+        egl: EGLDisplay,
+        compositor: DrmCompositor<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>,
+        device: DrmDevice,
+    },
+    Winit {
+        backend: WinitGraphicsBackend<GlowRenderer>,
+        damage_tracker: smithay::backend::renderer::damage::OutputDamageTracker,
+    },
+    None,
+}
 
 pub struct FloraState {
     pub display_handle: DisplayHandle,
@@ -59,18 +73,14 @@ pub struct FloraState {
     pub should_stop: bool,
     pub drm_devices: Vec<PathBuf>,
     pub renderer: Option<GlowRenderer>,
-    // Backend storage to keep them alive
-    pub _gbm_device: Option<smithay::backend::allocator::gbm::GbmDevice<DrmDeviceFd>>,
-    pub _egl_display: Option<EGLDisplay>,
-    // The compositor that handles rendering to a specific CRT/Connector
-    pub compositor: Option<DrmCompositor<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>>,
+    pub backend_data: BackendData,
+    // Windows for rendering and interaction
     // Windows for rendering and interaction
     pub windows: Vec<Window>,
     pub pointer_location: Point<f64, Physical>,
     pub grab_state: Option<(usize, Point<f64, Physical>)>,
     pub socket_name: std::ffi::OsString,
     pub needs_redraw: bool,
-    pub _drm_device: Option<DrmDevice>,
     // Egui state for UI rendering
     pub egui_state: EguiState,
     pub start_time: std::time::Instant,
@@ -101,15 +111,12 @@ impl FloraState {
             should_stop: false,
             drm_devices: Vec::new(),
             renderer: None,
-            _gbm_device: None,
-            _egl_display: None,
-            compositor: None,
+            backend_data: BackendData::None,
             windows: Vec::new(),
             pointer_location: (0.0, 0.0).into(),
             grab_state: None,
             socket_name: "".into(),
             needs_redraw: false,
-            _drm_device: None,
             // Initialize EguiState with default output size (will be updated later)
             egui_state: EguiState::new(Rectangle::new((0, 0).into(), (1280, 800).into())),
             start_time: std::time::Instant::now(),

@@ -14,7 +14,7 @@ use tracing::info;
 use std::{fs::OpenOptions, path::Path, os::unix::io::OwnedFd};
 use anyhow::{Result, anyhow};
 
-pub fn init_graphics(device_path: &Path) -> Result<(
+pub fn init_drm_graphics(device_path: &Path) -> Result<(
     GbmDevice<DrmDeviceFd>,
     EGLDisplay,
     GlowRenderer,
@@ -89,12 +89,12 @@ pub fn init_graphics(device_path: &Path) -> Result<(
     ).map_err(|e| anyhow!("Compositor creation failed: {}", e))?;
 
     let output = Output::new(
-        "Virtual-1".to_string(),
+        "Display-1".to_string(),
         PhysicalProperties {
             size: (500, 300).into(),
             subpixel: Subpixel::Unknown,
             make: "Flora".to_string(),
-            model: "Virtual Display".to_string(),
+            model: "DRM Display".to_string(),
         },
     );
     
