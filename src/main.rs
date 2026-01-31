@@ -354,27 +354,10 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
         for window in &state.windows {
             let surface_size = window.toplevel.current_state().size.unwrap_or((800, 600).into());
             
-            // 1. Draw Title Bar Background (Solid Gray)
-            let bar_rect = smithay::utils::Rectangle::new(window.location, (surface_size.w, TITLE_BAR_HEIGHT).into());
-            elements.push(CustomRenderElement::Solid(SolidColorRenderElement::new(
-                window.bar_id.clone(),
-                bar_rect,
-                smithay::backend::renderer::utils::CommitCounter::default(),
-                [0.15, 0.15, 0.15, 1.0],
-                Kind::Unspecified
-            )));
-
-            // 2. Draw Client Surface (shifted down by TITLE_BAR_HEIGHT)
-            let surface_location = Point::from((window.location.x, window.location.y + TITLE_BAR_HEIGHT));
-            elements.extend(render_elements_from_surface_tree::<GlowRenderer, CustomRenderElement>(
-                renderer, 
-                window.toplevel.wl_surface(), 
-                surface_location, 
-                1.0, 1.0, 
-                Kind::Unspecified
-            ));
-
-            // 3. Draw Traffic Light Buttons (on top of everything)
+            // Elements are rendered front-to-back (first element = top layer)
+            // So we push: buttons first (top), then surface, then title bar bg (bottom)
+            
+            // 1. Draw Traffic Light Buttons (on top of everything)
             let button_render_size = BUTTON_SIZE;
             let btn_y = window.location.y + (TITLE_BAR_HEIGHT - button_render_size) / 2;
             
@@ -402,6 +385,26 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
                 smithay::utils::Rectangle::new((window.location.x + MARGIN + (button_render_size + BUTTON_SPACING) * 2, btn_y).into(), (button_render_size, button_render_size).into()),
                 smithay::backend::renderer::utils::CommitCounter::default(),
                 [0.0, 0.8, 0.3, 1.0],
+                Kind::Unspecified
+            )));
+
+            // 2. Draw Client Surface (shifted down by TITLE_BAR_HEIGHT)
+            let surface_location = Point::from((window.location.x, window.location.y + TITLE_BAR_HEIGHT));
+            elements.extend(render_elements_from_surface_tree::<GlowRenderer, CustomRenderElement>(
+                renderer, 
+                window.toplevel.wl_surface(), 
+                surface_location, 
+                1.0, 1.0, 
+                Kind::Unspecified
+            ));
+
+            // 3. Draw Title Bar Background (Solid Gray) - at the back
+            let bar_rect = smithay::utils::Rectangle::new(window.location, (surface_size.w, TITLE_BAR_HEIGHT).into());
+            elements.push(CustomRenderElement::Solid(SolidColorRenderElement::new(
+                window.bar_id.clone(),
+                bar_rect,
+                smithay::backend::renderer::utils::CommitCounter::default(),
+                [0.15, 0.15, 0.15, 1.0],
                 Kind::Unspecified
             )));
         }
