@@ -420,12 +420,19 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
                             let win_x = window_pos.x as f32;
                             let win_y = window_pos.y as f32;
 
-                            // Traffic light buttons as rounded squares (confirmed to work)
-                            let btn_size = 14.0_f32;
+                            // Traffic light button geometry
+                            let btn_radius = 6.0_f32;
                             let btn_spacing = 8.0_f32;
                             let left_margin = 12.0_f32;
                             let center_y = win_y + (TITLE_BAR_HEIGHT as f32 / 2.0);
-                            let top_y = center_y - (btn_size / 2.0);
+                            
+                            // Button area for hover detection
+                            let btn_group_width = (btn_radius * 2.0) * 3.0 + btn_spacing * 2.0;
+                            let btn_group_rect = egui::Rect::from_min_size(
+                                egui::pos2(win_x + left_margin - btn_radius, center_y - btn_radius),
+                                egui::vec2(btn_group_width, btn_radius * 2.0)
+                            );
+                            let is_hovering_group = ui.rect_contains_pointer(btn_group_rect);
 
                             let colors = if *is_focused {
                                 [
@@ -437,18 +444,28 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
                                 [egui::Color32::from_rgb(75, 75, 75); 3]
                             };
 
-                            for (i, btn_color) in colors.iter().enumerate() {
-                                let left_x = win_x + left_margin + (i as f32 * (btn_size + btn_spacing));
-                                let rect = egui::Rect::from_min_size(
-                                    egui::pos2(left_x, top_y), 
-                                    egui::vec2(btn_size, btn_size)
-                                );
+                            let icons = ["✕", "—", "＋"];
 
-                                // Use rect_filled with rounding - we know rects work!
-                                // Rounding might fail, but let's try 4.0 (half-rounded)
-                                ui.painter().rect_filled(rect, 4.0, *btn_color);
+                            for (i, btn_color) in colors.iter().enumerate() {
+                                let center_x = win_x + left_margin + btn_radius + (i as f32 * (btn_radius * 2.0 + btn_spacing));
+                                let center = egui::pos2(center_x, center_y);
+                                
+                                // Draw circular button
+                                ui.painter().circle_filled(center, btn_radius, *btn_color);
+
+                                // Draw icon when hovering
+                                if is_hovering_group && *is_focused {
+                                    ui.painter().text(
+                                        center,
+                                        egui::Align2::CENTER_CENTER,
+                                        icons[i],
+                                        egui::FontId::proportional(8.0),
+                                        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 160)
+                                    );
+                                }
 
                                 // Click handling
+                                let rect = egui::Rect::from_center_size(center, egui::vec2(btn_radius * 2.0, btn_radius * 2.0));
                                 let response = ui.interact(rect, egui::Id::new(format!("btn_{}_{}", idx, i)), egui::Sense::click());
                                 if response.clicked() && *is_focused && i == 0 {
                                     pending_close = Some(*idx);
