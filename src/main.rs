@@ -412,67 +412,62 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
         // Render egui UI overlay
         let egui_element = state.egui_state.render(
             |ctx| {
-                // RED TINT TEST: Tint the whole screen red to verify egui visibility
                 egui::CentralPanel::default()
                     .frame(egui::Frame::none())
                     .show(ctx, |ui| {
+                        // 1. RED TINT (Verification that egui layer is visible)
                         ui.painter().rect_filled(
                             ui.max_rect(), 
                             0.0, 
-                            egui::Color32::from_rgba_unmultiplied(255, 0, 0, 64) // 25% transparent red
+                            egui::Color32::from_rgba_unmultiplied(255, 0, 0, 32)
                         );
-                    });
 
-                for (idx, window_pos, _surface_size, is_focused) in &window_data {
-                    // Button geometry
-                    let btn_radius = 6.0_f32;
-                    let btn_spacing = 8.0_f32;
-                    let left_margin = 12.0_f32;
-                    let center_y = window_pos.y as f32 + (TITLE_BAR_HEIGHT as f32 / 2.0);
-                    
-                    // macOS button colors
-                    let colors = if *is_focused {
-                        [
-                            egui::Color32::from_rgb(255, 95, 87),  // Red (Close)
-                            egui::Color32::from_rgb(255, 189, 46), // Yellow (Minimize)
-                            egui::Color32::from_rgb(40, 200, 64),  // Green (Maximize)
-                        ]
-                    } else {
-                        [egui::Color32::from_rgb(75, 75, 75); 3] // Gray when inactive
-                    };
-                    
-                    // Use egui::Window with no frame for better bounds handling
-                    egui::Window::new(format!("titlebar_{}", idx))
-                        .title_bar(false)
-                        .resizable(false)
-                        .collapsible(false)
-                        .frame(egui::Frame::NONE)  // Transparent frame
-                        .fixed_pos([window_pos.x as f32 + left_margin - 4.0, center_y - btn_radius - 2.0])
-                        .show(ctx, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.add_space(4.0);  // Left padding
-                                for (i, btn_color) in colors.iter().enumerate() {
-                                    // Allocate space for button
-                                    let (rect, response) = ui.allocate_exact_size(
-                                        egui::vec2(btn_radius * 2.0, btn_radius * 2.0),
-                                        egui::Sense::click()
-                                    );
-                                    
-                                    // Draw circle at the allocated rect's CENTER
-                                    ui.painter().circle_filled(rect.center(), btn_radius, *btn_color);
-                                    
-                                    // Add spacing between buttons
-                                    if i < 2 {
-                                        ui.add_space(btn_spacing);
-                                    }
-                                    
-                                    if response.clicked() && *is_focused && i == 0 {
-                                        pending_close = Some(*idx);
-                                    }
+                        for (idx, window_pos, _surface_size, is_focused) in &window_data {
+                            let win_x = window_pos.x as f32;
+                            let win_y = window_pos.y as f32;
+
+                            // 2. GREEN MARKER (Verification of window_pos)
+                            // Draw a small green square at the top-left of the title bar
+                            ui.painter().rect_filled(
+                                egui::Rect::from_min_size(egui::pos2(win_x, win_y), egui::vec2(10.0, 10.0)),
+                                0.0,
+                                egui::Color32::GREEN
+                            );
+
+                            // 3. BUTTONS
+                            let btn_radius = 8.0_f32; // Slightly larger for visibility
+                            let btn_spacing = 10.0_f32;
+                            let left_margin = 15.0_f32;
+                            let center_y = win_y + (TITLE_BAR_HEIGHT as f32 / 2.0);
+                            
+                            let colors = if *is_focused {
+                                [
+                                    egui::Color32::from_rgb(255, 95, 87),
+                                    egui::Color32::from_rgb(255, 189, 46),
+                                    egui::Color32::from_rgb(40, 200, 64),
+                                ]
+                            } else {
+                                [egui::Color32::from_rgb(100, 100, 100); 3]
+                            };
+                            
+                            for (i, btn_color) in colors.iter().enumerate() {
+                                let center_x = win_x + left_margin + btn_radius 
+                                    + (i as f32 * (btn_radius * 2.0 + btn_spacing));
+                                let center = egui::pos2(center_x, center_y);
+                                
+                                // Draw high-visibility circle
+                                ui.painter().circle_filled(center, btn_radius, *btn_color);
+                                
+                                // Allocate clickable area
+                                let btn_rect = egui::Rect::from_center_size(center, egui::vec2(20.0, 20.0));
+                                let response = ui.interact(btn_rect, egui::Id::new(format!("btn_{}_{}", idx, i)), egui::Sense::click());
+                                
+                                if response.clicked() && *is_focused && i == 0 {
+                                    pending_close = Some(*idx);
                                 }
-                            });
-                        });
-                }
+                            }
+                        }
+                    });
             },
             renderer,
             Rectangle::new((0, 0).into(), (output_size.w, output_size.h).into()),
