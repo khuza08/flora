@@ -106,6 +106,11 @@ impl SeatHandler for FloraState {
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&Self::KeyboardFocus>) {
         info!("Focus: Changed to {:?}", focused);
+        let serial = SERIAL_COUNTER.next_serial();
+        if let Some(keyboard) = seat.get_keyboard() {
+            keyboard.set_focus(self, focused.cloned(), serial);
+        }
+
         // In Smithay 0.7.0, we must manually notify the TextInputHandle of focus changes
         let ti = seat.text_input();
         ti.set_focus(focused.cloned());
@@ -559,7 +564,11 @@ fn main() -> anyhow::Result<()> {
                             let serial = SERIAL_COUNTER.next_serial();
                             let state_enum = if pressed { smithay::backend::input::KeyState::Pressed } else { smithay::backend::input::KeyState::Released };
                             if let Some(keyboard) = state.seat.get_keyboard() {
-                                keyboard.input::<(), _>(state, keycode.into(), state_enum, serial, time, |_, _, _| FilterResult::Forward);
+                                // Add +8 offset for evdev -> XKB keycode mapping
+                                keyboard.input::<(), _>(state, (keycode + 8).into(), state_enum, serial, time, |_, _, keysym| {
+                                    info!("🎹 Keysym: {:?}", keysym);
+                                    FilterResult::Forward
+                                });
                             }
                         }
                         FloraInputEvent::PointerMotion { delta, time } => {
@@ -645,12 +654,12 @@ fn main() -> anyhow::Result<()> {
             // Background Thread
             std::thread::spawn(move || {
                 let mut libinput = smithay::reexports::input::Libinput::new_from_path(FloraLibinputInterface);
-                info!("Input Thread: Started and scanning devices...");
-                if let Ok(entries) = std::fs::read_dir("/dev/input/by-path/") {
+                info!("Input Thread: Started and scanning /dev/input/event* for unique devices...");
+                if let Ok(entries) = std::fs::read_dir("/dev/input/") {
                     for entry in entries.flatten() {
-                        let path = entry.path().to_string_lossy().into_owned();
-                        if path.contains("acpi") || path.contains("i8042-serio-1-event-mouse") { continue; }
-                        if path.contains("-event-kbd") || path.contains("-event-mouse") {
+                        let name = entry.file_name().to_string_lossy().into_owned();
+                        if name.starts_with("event") {
+                            let path = format!("/dev/input/{}", name);
                             info!("Input Thread: Adding device: {}", path);
                             libinput.path_add_device(&path);
                         }
