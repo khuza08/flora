@@ -438,29 +438,27 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
                         .collapsible(false)
                         .frame(egui::Frame::NONE)  // Transparent frame
                         .fixed_pos([window_pos.x as f32 + left_margin - 4.0, center_y - btn_radius - 2.0])
-                        .fixed_size([60.0, btn_radius * 2.0 + 4.0])
                         .show(ctx, |ui| {
                             ui.horizontal(|ui| {
+                                ui.add_space(4.0);  // Left padding
                                 for (i, btn_color) in colors.iter().enumerate() {
-                                    // Calculate absolute position
-                                    let center_x = window_pos.x as f32 + left_margin + btn_radius 
-                                        + (i as f32 * (btn_radius * 2.0 + btn_spacing));
-                                    let center = egui::pos2(center_x, center_y);
-                                    
-                                    // Draw circle using painter at absolute coords
-                                    ui.painter().circle_filled(center, btn_radius, *btn_color);
-                                    
-                                    // Allocate space for click handling
+                                    // Allocate space for button - this gives us proper coordinates
                                     let (rect, response) = ui.allocate_exact_size(
-                                        egui::vec2(btn_radius * 2.0 + btn_spacing, btn_radius * 2.0),
+                                        egui::vec2(btn_radius * 2.0, btn_radius * 2.0),
                                         egui::Sense::click()
                                     );
+                                    
+                                    // Draw circle at the allocated rect's CENTER (not absolute coords!)
+                                    ui.painter().circle_filled(rect.center(), btn_radius, *btn_color);
+                                    
+                                    // Add spacing between buttons
+                                    if i < 2 {
+                                        ui.add_space(btn_spacing);
+                                    }
                                     
                                     if response.clicked() && *is_focused && i == 0 {
                                         pending_close = Some(*idx);
                                     }
-                                    
-                                    let _ = rect; // Suppress unused warning
                                 }
                             });
                         });
