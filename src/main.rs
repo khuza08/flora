@@ -107,10 +107,6 @@ impl SeatHandler for FloraState {
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&Self::KeyboardFocus>) {
         info!("Focus: Changed to {:?}", focused);
-        let serial = SERIAL_COUNTER.next_serial();
-        if let Some(keyboard) = seat.get_keyboard() {
-            keyboard.set_focus(self, focused.cloned(), serial);
-        }
 
         // In Smithay 0.7.0, we must manually notify the TextInputHandle of focus changes
         let ti = seat.text_input();
@@ -349,17 +345,6 @@ impl XdgShellHandler for FloraState {
         if let Some(output) = self.output.as_ref() {
             output.enter(&wl_surface);
         }
-
-        // CRITICAL: Send an initial frame callback to kickstart the client
-        // Many clients (like foot) wait for a frame callback before committing their first buffer
-        use smithay::wayland::compositor::with_surface_tree_downward;
-        let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u32;
-        with_surface_tree_downward(&wl_surface, (), |_, _, _| TraversalAction::DoChildren(()), |_, states, _| {
-            let mut guard = states.cached_state.get::<SurfaceAttributes>();
-            for callback in guard.current().frame_callbacks.drain(..) { 
-                callback.done(time); 
-            }
-        }, |_, _, _| true);
 
         self.needs_redraw = true;
     }
