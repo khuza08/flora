@@ -378,66 +378,73 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
                     egui::Area::new(egui::Id::new(format!("titlebar_{}", idx)))
                         .fixed_pos([window_pos.x as f32, window_pos.y as f32])
                         .show(ctx, |ui| {
-                            // Titlebar background
+                            // Titlebar background - paint at absolute position
                             let title_rect = egui::Rect::from_min_size(
-                                egui::pos2(0.0, 0.0),
+                                egui::pos2(window_pos.x as f32, window_pos.y as f32),
                                 egui::vec2(surface_size.w as f32, TITLE_BAR_HEIGHT as f32),
                             );
                             ui.painter().rect_filled(title_rect, 0.0, egui::Color32::from_rgb(38, 38, 38));
                             
-                            ui.horizontal_centered(|ui| {
-                                ui.add_space(12.0); // macOS standard left margin
+                            // macOS button colors - colored when focused, gray when not
+                            let colors = if *is_focused {
+                                [
+                                    egui::Color32::from_rgb(255, 95, 87),  // Red (Close)
+                                    egui::Color32::from_rgb(255, 189, 46), // Yellow (Minimize)
+                                    egui::Color32::from_rgb(40, 200, 64),  // Green (Maximize)
+                                ]
+                            } else {
+                                [egui::Color32::from_rgb(75, 75, 75); 3] // Gray when inactive
+                            };
+                            
+                            // Hover icons (macOS style)
+                            let icons = ["✕", "—", "＋"];
+                            
+                            // Calculate button positions explicitly
+                            let btn_radius = 6.0_f32;
+                            let btn_spacing = 8.0_f32;
+                            let left_margin = 12.0_f32;
+                            let center_y = window_pos.y as f32 + (TITLE_BAR_HEIGHT as f32 / 2.0);
+                            
+                            // Button area for hover detection
+                            let button_area_start = egui::pos2(
+                                window_pos.x as f32 + left_margin - btn_radius,
+                                center_y - btn_radius
+                            );
+                            let button_area = egui::Rect::from_min_size(
+                                button_area_start,
+                                egui::vec2((btn_radius * 2.0) * 3.0 + btn_spacing * 2.0, btn_radius * 2.0),
+                            );
+                            let is_hovering_area = ui.rect_contains_pointer(button_area);
+                            
+                            for (i, btn_color) in colors.iter().enumerate() {
+                                // Calculate center position for each button
+                                let center_x = window_pos.x as f32 + left_margin + btn_radius 
+                                    + (i as f32 * (btn_radius * 2.0 + btn_spacing));
+                                let center = egui::pos2(center_x, center_y);
                                 
-                                // macOS button colors - colored when focused, gray when not
-                                let colors = if *is_focused {
-                                    [
-                                        egui::Color32::from_rgb(255, 95, 87),  // Red (Close)
-                                        egui::Color32::from_rgb(255, 189, 46), // Yellow (Minimize)
-                                        egui::Color32::from_rgb(40, 200, 64),  // Green (Maximize)
-                                    ]
-                                } else {
-                                    [egui::Color32::from_rgb(75, 75, 75); 3] // Gray when inactive
-                                };
+                                // Draw circle button
+                                ui.painter().circle_filled(center, btn_radius, *btn_color);
                                 
-                                // Hover icons (macOS style)
-                                let icons = ["✕", "—", "＋"];
-                                
-                                // Check if mouse is hovering over any button area
-                                let button_area = egui::Rect::from_min_size(
-                                    ui.cursor().min,
-                                    egui::vec2(12.0 * 3.0 + 8.0 * 2.0, 12.0), // 3 buttons + spacing
-                                );
-                                let is_hovering_area = ui.rect_contains_pointer(button_area);
-                                
-                                for (i, btn_color) in colors.iter().enumerate() {
-                                    let btn_size = egui::vec2(12.0, 12.0); // macOS standard 12px
-                                    let (rect, response) = ui.allocate_exact_size(btn_size, egui::Sense::click());
-                                    
-                                    // Draw circle button
-                                    let center = rect.center();
-                                    let radius = 6.0; // 12px diameter / 2
-                                    ui.painter().circle_filled(center, radius, *btn_color);
-                                    
-                                    // Draw hover icon when hovering and focused
-                                    if is_hovering_area && *is_focused {
-                                        let icon_color = egui::Color32::from_rgba_premultiplied(0, 0, 0, 180);
-                                        ui.painter().text(
-                                            center,
-                                            egui::Align2::CENTER_CENTER,
-                                            icons[i],
-                                            egui::FontId::proportional(8.0),
-                                            icon_color,
-                                        );
-                                    }
-                                    
-                                    // Handle click
-                                    if response.clicked() && *is_focused {
-                                        // Button actions handled in input loop
-                                    }
-                                    
-                                    ui.add_space(8.0); // macOS standard 8px spacing
+                                // Draw hover icon when hovering and focused
+                                if is_hovering_area && *is_focused {
+                                    let icon_color = egui::Color32::from_rgba_premultiplied(0, 0, 0, 180);
+                                    ui.painter().text(
+                                        center,
+                                        egui::Align2::CENTER_CENTER,
+                                        icons[i],
+                                        egui::FontId::proportional(8.0),
+                                        icon_color,
+                                    );
                                 }
-                            });
+                                
+                                // Create invisible button for click detection
+                                let btn_rect = egui::Rect::from_center_size(center, egui::vec2(btn_radius * 2.0, btn_radius * 2.0));
+                                let response = ui.allocate_rect(btn_rect, egui::Sense::click());
+                                
+                                if response.clicked() && *is_focused && i == 0 {
+                                    // Close button clicked - will be handled
+                                }
+                            }
                         });
                 }
             },
