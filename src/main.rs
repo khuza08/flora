@@ -413,11 +413,11 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
         let egui_element = state.egui_state.render(
             |ctx| {
                 for (idx, window_pos, surface_size, is_focused) in &window_data {
-                    // Title bar rect (for reference)
-                    let title_rect = egui::Rect::from_min_size(
-                        egui::pos2(window_pos.x as f32, window_pos.y as f32),
-                        egui::vec2(surface_size.w as f32, TITLE_BAR_HEIGHT as f32),
-                    );
+                    // Button geometry
+                    let btn_radius = 6.0_f32;
+                    let btn_spacing = 8.0_f32;
+                    let left_margin = 12.0_f32;
+                    let center_y = window_pos.y as f32 + (TITLE_BAR_HEIGHT as f32 / 2.0);
                     
                     // macOS button colors
                     let colors = if *is_focused {
@@ -430,40 +430,39 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
                         [egui::Color32::from_rgb(75, 75, 75); 3] // Gray when inactive
                     };
                     
-                    // Button geometry
-                    let btn_radius = 6.0_f32;
-                    let btn_spacing = 8.0_f32;
-                    let left_margin = 12.0_f32;
-                    let center_y = window_pos.y as f32 + (TITLE_BAR_HEIGHT as f32 / 2.0);
-                    
-                    // Create Area that covers the entire title bar
-                    egui::Area::new(egui::Id::new(format!("titlebar_{}", idx)))
-                        .fixed_pos([window_pos.x as f32, window_pos.y as f32])
+                    // Use egui::Window with no frame for better bounds handling
+                    // This ensures smithay-egui includes the content in the rendered texture
+                    egui::Window::new(format!("titlebar_{}", idx))
+                        .title_bar(false)
+                        .resizable(false)
+                        .collapsible(false)
+                        .frame(egui::Frame::NONE)  // Transparent frame
+                        .fixed_pos([window_pos.x as f32 + left_margin - 4.0, center_y - btn_radius - 2.0])
+                        .fixed_size([60.0, btn_radius * 2.0 + 4.0])
                         .show(ctx, |ui| {
-                            // CRITICAL: Expand area to include the full title bar rect
-                            // This ensures smithay-egui includes this area in the rendered texture
-                            ui.expand_to_include_rect(title_rect);
-                            
-                            // Draw title bar background
-                            ui.painter().rect_filled(title_rect, 0.0, egui::Color32::from_rgb(38, 38, 38));
-                            
-                            // Draw traffic light buttons 
-                            for (i, btn_color) in colors.iter().enumerate() {
-                                let center_x = window_pos.x as f32 + left_margin + btn_radius 
-                                    + (i as f32 * (btn_radius * 2.0 + btn_spacing));
-                                let center = egui::pos2(center_x, center_y);
-                                
-                                // Draw the circle
-                                ui.painter().circle_filled(center, btn_radius, *btn_color);
-                                
-                                // Create clickable area for the button
-                                let btn_rect = egui::Rect::from_center_size(center, egui::vec2(14.0, 14.0));
-                                let response = ui.allocate_rect(btn_rect, egui::Sense::click());
-                                
-                                if response.clicked() && *is_focused && i == 0 {
-                                    pending_close = Some(*idx);
+                            ui.horizontal(|ui| {
+                                for (i, btn_color) in colors.iter().enumerate() {
+                                    // Calculate absolute position
+                                    let center_x = window_pos.x as f32 + left_margin + btn_radius 
+                                        + (i as f32 * (btn_radius * 2.0 + btn_spacing));
+                                    let center = egui::pos2(center_x, center_y);
+                                    
+                                    // Draw circle using painter at absolute coords
+                                    ui.painter().circle_filled(center, btn_radius, *btn_color);
+                                    
+                                    // Allocate space for click handling
+                                    let (rect, response) = ui.allocate_exact_size(
+                                        egui::vec2(btn_radius * 2.0 + btn_spacing, btn_radius * 2.0),
+                                        egui::Sense::click()
+                                    );
+                                    
+                                    if response.clicked() && *is_focused && i == 0 {
+                                        pending_close = Some(*idx);
+                                    }
+                                    
+                                    let _ = rect; // Suppress unused warning
                                 }
-                            }
+                            });
                         });
                 }
             },
