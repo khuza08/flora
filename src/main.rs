@@ -290,6 +290,7 @@ impl CompositorHandler for FloraState {
 
     // Callback when a client commits a new surface buffer
     fn commit(&mut self, surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface) {
+        info!("🔴 COMMIT HANDLER CALLED for surface {:?}", surface);
         use smithay::backend::renderer::utils::with_renderer_surface_state;
         let has_buffer = with_renderer_surface_state(surface, |state| {
             let buffer = state.buffer();
