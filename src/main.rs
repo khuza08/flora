@@ -15,7 +15,7 @@ use smithay::{
         calloop::{EventLoop, Interest, Mode, PostAction, generic::Generic, channel::Event},
         wayland_server::Display,
     },
-    utils::{SERIAL_COUNTER, Point, Physical, Rectangle},
+    utils::{SERIAL_COUNTER, Point, Physical, Logical, Rectangle},
     wayland::{
         compositor::{with_surface_tree_downward, TraversalAction, SurfaceAttributes},
     },
@@ -203,6 +203,7 @@ fn restore_tty(tty_file: Option<std::fs::File>) {
 }
 
 fn handle_input_event(state: &mut FloraState, event: FloraInputEvent) {
+    let scale = get_output_scale(state);
     match event {
         FloraInputEvent::Keyboard { keycode, pressed, time } => {
             let serial = SERIAL_COUNTER.next_serial();
@@ -215,9 +216,9 @@ fn handle_input_event(state: &mut FloraState, event: FloraInputEvent) {
         FloraInputEvent::PointerMotion { delta, time } => {
             state.pointer_location += delta;
             clamp_pointer(state);
-            forward_pointer_to_egui(state);
+            forward_pointer_to_egui(state, scale);
             update_grab(state);
-            forward_pointer_motion(state, time);
+            forward_pointer_motion(state, time, scale);
             state.needs_redraw = true;
         }
         FloraInputEvent::PointerMotionAbsolute { location, time } => {
@@ -229,21 +230,60 @@ fn handle_input_event(state: &mut FloraState, event: FloraInputEvent) {
                 }
             }
             
-            forward_pointer_to_egui(state);
+            forward_pointer_to_egui(state, scale);
             update_grab(state);
-            forward_pointer_motion(state, time);
+            forward_pointer_motion(state, time, scale);
             state.needs_redraw = true;
         }
         FloraInputEvent::PointerButton { button, pressed, time } => {
-            handle_pointer_button(state, button, pressed, time);
+            handle_pointer_button(state, button, pressed, time, scale);
             state.needs_redraw = true;
         }
     }
 }
 
-fn forward_pointer_to_egui(state: &mut FloraState) {
-    let p = state.pointer_location.to_logical(1.0);
+fn forward_pointer_to_egui(state: &mut FloraState, scale: f64) {
+    let p = state.pointer_location.to_logical(scale);
     state.egui_state.handle_pointer_motion((p.x as i32, p.y as i32).into());
+}
+
+fn get_output_scale(state: &FloraState) -> f64 {
+    state.output.as_ref()
+        .map(|o| o.current_scale().fractional_scale())
+        .unwrap_or(1.0)
+}
+
+/// Hit region for window hit-testing
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum HitRegion {
+    TitleBar,
+    Client { local_x: i32, local_y: i32 },
+    None,
+}
+
+/// Shared hit-test logic for a single window operating in logical space
+fn hit_test_window(
+    pointer_logical: Point<f64, Logical>, 
+    window_location_logical: Point<f64, Logical>, 
+    surface_size: smithay::utils::Size<i32, Logical>
+) -> HitRegion {
+    let relative_x = pointer_logical.x - window_location_logical.x;
+    let relative_y = pointer_logical.y - window_location_logical.y;
+    
+    if relative_x >= 0.0 && relative_x < surface_size.w as f64 {
+        if relative_y >= 0.0 && relative_y < TITLE_BAR_HEIGHT as f64 {
+            HitRegion::TitleBar
+        } else if relative_y >= TITLE_BAR_HEIGHT as f64 && relative_y < (TITLE_BAR_HEIGHT + surface_size.h) as f64 {
+            HitRegion::Client { 
+                local_x: relative_x.round() as i32, 
+                local_y: (relative_y - TITLE_BAR_HEIGHT as f64).round() as i32 
+            }
+        } else {
+            HitRegion::None
+        }
+    } else {
+        HitRegion::None
+    }
 }
 
 fn clamp_pointer(state: &mut FloraState) {
@@ -267,35 +307,31 @@ fn update_grab(state: &mut FloraState) {
     }
 }
 
-fn forward_pointer_motion(state: &mut FloraState, time: u32) {
+fn forward_pointer_motion(state: &mut FloraState, time: u32, scale: f64) {
     let serial = SERIAL_COUNTER.next_serial();
+    let pointer_logical = state.pointer_location.to_logical(scale);
+
     if let Some(pointer) = state.seat.get_pointer() {
         let under = state.windows.iter().rev().find_map(|w| {
-            let px = state.pointer_location.x.round() as i32;
-            let py = state.pointer_location.y.round() as i32;
-            let relative_x = px - w.location.x;
-            let relative_y = py - w.location.y;
-            
             let surface_size = w.toplevel.current_state().size.unwrap_or((800, 600).into());
+            let window_location_logical = Point::<f64, Logical>::from((w.location.x as f64 / scale, w.location.y as f64 / scale));
             
-            if relative_x >= 0 && relative_x < surface_size.w && 
-               relative_y >= TITLE_BAR_HEIGHT && relative_y < (TITLE_BAR_HEIGHT + surface_size.h) {
-                let local_x = relative_x;
-                let local_y = relative_y - TITLE_BAR_HEIGHT;
-                Some((w.toplevel.wl_surface().clone(), Point::<f64, smithay::utils::Logical>::from((local_x as f64, local_y as f64))))
-            } else {
-                None
+            match hit_test_window(pointer_logical, window_location_logical, surface_size) {
+                HitRegion::Client { local_x, local_y } => {
+                    Some((w.toplevel.wl_surface().clone(), Point::<f64, Logical>::from((local_x as f64, local_y as f64))))
+                }
+                _ => None
             }
         });
 
         pointer.motion(state, under, &smithay::input::pointer::MotionEvent {
-            location: state.pointer_location.to_logical(1.0),
+            location: pointer_logical,
             serial, time,
         });
     }
 }
 
-fn handle_pointer_button(state: &mut FloraState, button: u32, pressed: bool, time: u32) {
+fn handle_pointer_button(state: &mut FloraState, button: u32, pressed: bool, time: u32, scale: f64) {
     let serial = SERIAL_COUNTER.next_serial();
     let state_enum = if pressed { smithay::backend::input::ButtonState::Pressed } else { smithay::backend::input::ButtonState::Released };
     
@@ -318,41 +354,34 @@ fn handle_pointer_button(state: &mut FloraState, button: u32, pressed: bool, tim
     }
     
     if pressed {
+        let pointer_logical = state.pointer_location.to_logical(scale);
+        // Use shared hit-test helper
         let hit = state.windows.iter().enumerate().rev().find_map(|(i, w)| {
-            let px = state.pointer_location.x.round() as i32;
-            let py = state.pointer_location.y.round() as i32;
-            let relative_x = px - w.location.x;
-            let relative_y = py - w.location.y;
-            
             let surface_size = w.toplevel.current_state().size.unwrap_or((800, 600).into());
+            let window_location_logical = Point::<f64, Logical>::from((w.location.x as f64 / scale, w.location.y as f64 / scale));
             
-            if relative_x >= 0 && relative_x < surface_size.w && 
-               relative_y >= 0 && relative_y < (TITLE_BAR_HEIGHT + surface_size.h) {
-                
-                if relative_y < TITLE_BAR_HEIGHT {
-                    // Title bar clicked - potential for grab
-                }
-                
-                let w_loc_f = Point::<f64, Physical>::from((w.location.x as f64, w.location.y as f64));
-                Some((i, state.pointer_location - w_loc_f))
+            let region = hit_test_window(pointer_logical, window_location_logical, surface_size);
+            if region != HitRegion::None {
+                // Return offset in physical space for grabbing
+                let w_loc_phys = Point::<f64, Physical>::from((w.location.x as f64, w.location.y as f64));
+                Some((i, state.pointer_location - w_loc_phys, region))
             } else {
                 None
             }
         });
 
-        if let Some((idx, offset)) = hit {
+        if let Some((idx, offset, region)) = hit {
             let surface = state.windows[idx].toplevel.wl_surface().clone();
             if let Some(keyboard) = state.seat.get_keyboard() {
                 keyboard.set_focus(state, Some(surface), serial);
             }
             
-            let py = state.pointer_location.y.round() as i32;
-            let rel_y = py - state.windows[idx].location.y;
-
+            // Bring window to front
             let win = state.windows.remove(idx);
             state.windows.push(win);
             
-            if rel_y < TITLE_BAR_HEIGHT {
+            // Start grab if title bar was clicked
+            if region == HitRegion::TitleBar {
                 state.grab_state = Some((state.windows.len() - 1, offset));
             }
         }
@@ -369,6 +398,7 @@ fn handle_pointer_button(state: &mut FloraState, button: u32, pressed: bool, tim
 }
 
 fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports::wayland_server::Display<FloraState>>>) -> Result<()> {
+    let scale = get_output_scale(state);
     if let (Some(compositor), Some(renderer)) = (state.compositor.as_mut(), state.renderer.as_mut()) {
         let color = [0.2, 0.2, 0.2, 1.0];
         let mut elements: Vec<CustomRenderElement> = Vec::new();
@@ -385,93 +415,91 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
             let is_focused = state.seat.get_keyboard()
                 .map(|kb| kb.current_focus().map(|f| f == *w.toplevel.wl_surface()).unwrap_or(false))
                 .unwrap_or(false);
-            (idx, w.location, surface_size, is_focused)
+            (idx, w.location, surface_size, is_focused, w.bar_id.clone())
         }).collect();
         
-        let mut pending_close = None;
+        let mut pending_close: Option<usize> = None;
         
         // Render egui UI overlay
         let egui_element = state.egui_state.render(
             |ctx| {
-                for (idx, window_pos, surface_size, is_focused) in &window_data {
-                    // Create a fixed window for each titlebar
-                    egui::Area::new(egui::Id::new(format!("titlebar_{}", idx)))
-                        .fixed_pos([window_pos.x as f32, window_pos.y as f32])
-                        .show(ctx, |ui| {
-                            // Titlebar background - paint at absolute position
-                            let title_rect = egui::Rect::from_min_size(
-                                egui::pos2(window_pos.x as f32, window_pos.y as f32),
-                                egui::vec2(surface_size.w as f32, TITLE_BAR_HEIGHT as f32),
-                            );
-                            ui.painter().rect_filled(title_rect, 0.0, egui::Color32::from_rgb(38, 38, 38));
-                            
-                            // macOS button colors - colored when focused, gray when not
-                            let colors = if *is_focused {
-                                [
-                                    egui::Color32::from_rgb(255, 95, 87),  // Red (Close)
-                                    egui::Color32::from_rgb(255, 189, 46), // Yellow (Minimize)
-                                    egui::Color32::from_rgb(40, 200, 64),  // Green (Maximize)
-                                ]
-                            } else {
-                                [egui::Color32::from_rgb(75, 75, 75); 3] // Gray when inactive
-                            };
-                            
-                            // Hover icons (macOS style)
-                            let icons = ["✕", "—", "＋"];
-                            
-                            // Tweak geometry
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE)
+                    .show(ctx, |ui| {
+                        for (idx, window_pos, _surface_size, is_focused, bar_id) in &window_data {
+                            let win_x = window_pos.x as f32;
+                            let win_y = window_pos.y as f32;
+
+                            // Traffic light button geometry
                             let btn_radius = 6.0_f32;
                             let btn_spacing = 8.0_f32;
                             let left_margin = 12.0_f32;
-                            let center_y = window_pos.y as f32 + (TITLE_BAR_HEIGHT as f32 / 2.0);
+                            let center_y = win_y + (TITLE_BAR_HEIGHT as f32 / 2.0);
                             
-                            // Group rect for unified hover feel
-                            let group_rect = egui::Rect::from_min_max(
-                                egui::pos2(window_pos.x as f32 + left_margin - 4.0, center_y - 10.0),
-                                egui::pos2(window_pos.x as f32 + left_margin + 50.0, center_y + 10.0)
+                            // Button area for hover detection
+                            let btn_group_width = (btn_radius * 2.0) * 3.0 + btn_spacing * 2.0;
+                            let btn_group_rect = egui::Rect::from_min_size(
+                                egui::pos2(win_x + left_margin - btn_radius, center_y - btn_radius),
+                                egui::vec2(btn_group_width, btn_radius * 2.0)
                             );
-                            let is_hovering_group = ui.rect_contains_pointer(group_rect);
-                            
+                            let is_hovering_group = ui.rect_contains_pointer(btn_group_rect);
+
+                            let colors = if *is_focused {
+                                [
+                                    egui::Color32::from_rgb(255, 95, 87),  // Red
+                                    egui::Color32::from_rgb(255, 189, 46), // Yellow
+                                    egui::Color32::from_rgb(40, 200, 64),  // Green
+                                ]
+                            } else {
+                                [egui::Color32::from_rgb(75, 75, 75); 3]
+                            };
+
+                            let icons = ["✕", "—", "＋"];
+
                             for (i, btn_color) in colors.iter().enumerate() {
-                                // Calculate center position for each button
-                                let center_x = window_pos.x as f32 + left_margin + btn_radius 
-                                    + (i as f32 * (btn_radius * 2.0 + btn_spacing));
+                                let center_x = win_x + left_margin + btn_radius + (i as f32 * (btn_radius * 2.0 + btn_spacing));
                                 let center = egui::pos2(center_x, center_y);
                                 
-                                // Draw circle button
+                                // Draw circular button
                                 ui.painter().circle_filled(center, btn_radius, *btn_color);
-                                
-                                // Draw hover icon when hovering and focused
+
+                                // Draw icon when hovering
                                 if is_hovering_group && *is_focused {
-                                    let icon_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 160);
                                     ui.painter().text(
                                         center,
                                         egui::Align2::CENTER_CENTER,
                                         icons[i],
-                                        egui::FontId::proportional(8.5),
-                                        icon_color,
+                                        egui::FontId::proportional(8.0),
+                                        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 160)
                                     );
                                 }
-                                
-                                // Create interaction area for click detection
-                                let btn_rect = egui::Rect::from_center_size(center, egui::vec2(15.0, 15.0));
-                                let response = ui.allocate_rect(btn_rect, egui::Sense::click());
-                                
-                                if response.clicked() && *is_focused {
-                                    if i == 0 {
-                                        pending_close = Some(*idx);
-                                    }
+
+                                // Click handling
+                                let rect = egui::Rect::from_center_size(center, egui::vec2(btn_radius * 2.0, btn_radius * 2.0));
+                                let response = ui.interact(rect, egui::Id::new(("btn", bar_id, i)), egui::Sense::click());
+                                if response.clicked() && *is_focused && i == 0 {
+                                    pending_close = Some(*idx);
                                 }
                             }
-                        });
-                }
+                        }
+                    });
             },
             renderer,
             Rectangle::new((0, 0).into(), (output_size.w, output_size.h).into()),
-            1.0,
-            1.0,
+            scale,
+            scale as f32,
         );
         
+        // Execute pending actions from egui
+        if let Some(idx) = pending_close {
+            state.windows[idx].toplevel.send_close();
+        }
+        
+        // RENDER ORDER: 
+        // Based on commit 1f6c1a5, the elements are rendered in REVERSE order 
+        // or a specific order where the FIRST element in the list is ON TOP.
+        
+        // 1. Egui Overlay (FRONT)
         match egui_element {
             Ok(egui_tex) => {
                 elements.push(CustomRenderElement::Egui(egui_tex));
@@ -480,17 +508,9 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
                 error!("Failed to render egui overlay: {:?}", err);
             }
         }
-        
-        // Execute pending actions from egui
-        if let Some(idx) = pending_close {
-            state.windows[idx].toplevel.send_close();
-        }
-        
-        // Draw client surfaces and title bar backgrounds
+
+        // 2. Client Surfaces (MIDDLE)
         for window in &state.windows {
-            let surface_size = window.toplevel.current_state().size.unwrap_or((800, 600).into());
-            
-            // Client Surface (shifted down by TITLE_BAR_HEIGHT)
             let surface_location = Point::from((window.location.x, window.location.y + TITLE_BAR_HEIGHT));
             elements.extend(render_elements_from_surface_tree::<GlowRenderer, CustomRenderElement>(
                 renderer, 
@@ -499,8 +519,11 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
                 1.0, 1.0, 
                 Kind::Unspecified
             ));
+        }
 
-            // Title Bar Background (Solid Gray) - rendered below egui overlay
+        // 3. Title Bar Backgrounds (BACK)
+        for window in &state.windows {
+            let surface_size = window.toplevel.current_state().size.unwrap_or((800, 600).into());
             let bar_rect = smithay::utils::Rectangle::new(window.location, (surface_size.w, TITLE_BAR_HEIGHT).into());
             elements.push(CustomRenderElement::Solid(SolidColorRenderElement::new(
                 window.bar_id.clone(),
@@ -510,6 +533,7 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
                 Kind::Unspecified
             )));
         }
+
         
         if let Err(e) = compositor.render_frame::<GlowRenderer, CustomRenderElement>(renderer, &elements, color, smithay::backend::drm::compositor::FrameFlags::empty()) {
 
