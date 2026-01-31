@@ -36,7 +36,12 @@ pub struct Window {
     pub toplevel: ToplevelSurface,
     pub location: Point<i32, Physical>,
     pub title_bar_height: i32,
+    pub bar_id: smithay::backend::renderer::element::Id,
+    pub red_id: smithay::backend::renderer::element::Id,
+    pub yellow_id: smithay::backend::renderer::element::Id,
+    pub green_id: smithay::backend::renderer::element::Id,
 }
+
 
 pub const TITLE_BAR_HEIGHT: i32 = 30;
 pub const BUTTON_SIZE: i32 = 12;
@@ -162,6 +167,10 @@ impl XdgShellHandler for FloraState {
             toplevel: surface, 
             location: (100, 100).into(),
             title_bar_height: TITLE_BAR_HEIGHT,
+            bar_id: smithay::backend::renderer::element::Id::new(),
+            red_id: smithay::backend::renderer::element::Id::new(),
+            yellow_id: smithay::backend::renderer::element::Id::new(),
+            green_id: smithay::backend::renderer::element::Id::new(),
         });
         if let Some(keyboard) = self.seat.get_keyboard() {
             keyboard.set_focus(self, Some(wl_surface.clone()), smithay::utils::SERIAL_COUNTER.next_serial());

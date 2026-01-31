@@ -357,44 +357,14 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
             // 1. Draw Title Bar Background (Solid Gray)
             let bar_rect = smithay::utils::Rectangle::new(window.location, (surface_size.w, TITLE_BAR_HEIGHT).into());
             elements.push(CustomRenderElement::Solid(SolidColorRenderElement::new(
-                smithay::backend::renderer::element::Id::new(),
+                window.bar_id.clone(),
                 bar_rect,
                 smithay::backend::renderer::utils::CommitCounter::default(),
                 [0.15, 0.15, 0.15, 1.0],
                 Kind::Unspecified
             )));
 
-            // 2. Draw Traffic Light Buttons
-            let btn_y = window.location.y + (TITLE_BAR_HEIGHT - BUTTON_SIZE) / 2;
-            
-            // Red (Close)
-            elements.push(CustomRenderElement::Solid(SolidColorRenderElement::new(
-                smithay::backend::renderer::element::Id::new(),
-                smithay::utils::Rectangle::new((window.location.x + MARGIN, btn_y).into(), (BUTTON_SIZE, BUTTON_SIZE).into()),
-                smithay::backend::renderer::utils::CommitCounter::default(),
-                [1.0, 0.35, 0.35, 1.0],
-                Kind::Unspecified
-            )));
-            
-            // Yellow (Minimize)
-            elements.push(CustomRenderElement::Solid(SolidColorRenderElement::new(
-                smithay::backend::renderer::element::Id::new(),
-                smithay::utils::Rectangle::new((window.location.x + MARGIN + BUTTON_SIZE + BUTTON_SPACING, btn_y).into(), (BUTTON_SIZE, BUTTON_SIZE).into()),
-                smithay::backend::renderer::utils::CommitCounter::default(),
-                [1.0, 0.75, 0.0, 1.0],
-                Kind::Unspecified
-            )));
-            
-            // Green (Maximize)
-            elements.push(CustomRenderElement::Solid(SolidColorRenderElement::new(
-                smithay::backend::renderer::element::Id::new(),
-                smithay::utils::Rectangle::new((window.location.x + MARGIN + (BUTTON_SIZE + BUTTON_SPACING) * 2, btn_y).into(), (BUTTON_SIZE, BUTTON_SIZE).into()),
-                smithay::backend::renderer::utils::CommitCounter::default(),
-                [0.0, 0.8, 0.3, 1.0],
-                Kind::Unspecified
-            )));
-
-            // 3. Draw Client Surface (shifted down by TITLE_BAR_HEIGHT)
+            // 2. Draw Client Surface (shifted down by TITLE_BAR_HEIGHT)
             let surface_location = Point::from((window.location.x, window.location.y + TITLE_BAR_HEIGHT));
             elements.extend(render_elements_from_surface_tree::<GlowRenderer, CustomRenderElement>(
                 renderer, 
@@ -403,6 +373,37 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
                 1.0, 1.0, 
                 Kind::Unspecified
             ));
+
+            // 3. Draw Traffic Light Buttons (on top of everything)
+            let button_render_size = BUTTON_SIZE;
+            let btn_y = window.location.y + (TITLE_BAR_HEIGHT - button_render_size) / 2;
+            
+            // Red (Close)
+            elements.push(CustomRenderElement::Solid(SolidColorRenderElement::new(
+                window.red_id.clone(),
+                smithay::utils::Rectangle::new((window.location.x + MARGIN, btn_y).into(), (button_render_size, button_render_size).into()),
+                smithay::backend::renderer::utils::CommitCounter::default(),
+                [1.0, 0.35, 0.35, 1.0],
+                Kind::Unspecified
+            )));
+            
+            // Yellow (Minimize)
+            elements.push(CustomRenderElement::Solid(SolidColorRenderElement::new(
+                window.yellow_id.clone(),
+                smithay::utils::Rectangle::new((window.location.x + MARGIN + button_render_size + BUTTON_SPACING, btn_y).into(), (button_render_size, button_render_size).into()),
+                smithay::backend::renderer::utils::CommitCounter::default(),
+                [1.0, 0.75, 0.0, 1.0],
+                Kind::Unspecified
+            )));
+            
+            // Green (Maximize)
+            elements.push(CustomRenderElement::Solid(SolidColorRenderElement::new(
+                window.green_id.clone(),
+                smithay::utils::Rectangle::new((window.location.x + MARGIN + (button_render_size + BUTTON_SPACING) * 2, btn_y).into(), (button_render_size, button_render_size).into()),
+                smithay::backend::renderer::utils::CommitCounter::default(),
+                [0.0, 0.8, 0.3, 1.0],
+                Kind::Unspecified
+            )));
         }
         
         if let Err(e) = compositor.render_frame::<GlowRenderer, CustomRenderElement>(renderer, &elements, color, smithay::backend::drm::compositor::FrameFlags::empty()) {
