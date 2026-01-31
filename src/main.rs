@@ -407,7 +407,7 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
             (idx, w.location, surface_size, is_focused)
         }).collect();
         
-        let mut pending_close = None;
+        let mut pending_close: Option<usize> = None;
         
         // Render egui UI overlay
         let egui_element = state.egui_state.render(
@@ -415,54 +415,48 @@ fn render_frame(state: &mut FloraState, display: &Rc<RefCell<smithay::reexports:
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE)
                     .show(ctx, |ui| {
-                        // 1. RED TINT (Verification)
+                        // 1. RED TINT
                         ui.painter().rect_filled(
                             ui.max_rect(), 
                             0.0, 
-                            egui::Color32::from_rgba_unmultiplied(255, 0, 0, 32)
-                        );
-
-                        // 2. YELLOW SQUARE at (50, 50) - Should be inside the purple square
-                        ui.painter().rect_filled(
-                            egui::Rect::from_min_size(egui::pos2(50.0, 50.0), egui::vec2(20.0, 20.0)),
-                            0.0,
-                            egui::Color32::YELLOW
-                        );
-
-                        // 3. DEBUG TEXT
-                        ui.painter().text(
-                            egui::pos2(100.0, 50.0),
-                            egui::Align2::LEFT_TOP,
-                            format!("Windows: {}", window_data.len()),
-                            egui::FontId::proportional(20.0),
-                            egui::Color32::WHITE
+                            egui::Color32::from_rgba_unmultiplied(255, 0, 0, 64)
                         );
 
                         for (idx, window_pos, _surface_size, _is_focused) in &window_data {
                             let win_x = window_pos.x as f32;
                             let win_y = window_pos.y as f32;
 
-                            // 4. WHITE DEBUG CIRCLE (Big and obvious)
-                            ui.painter().circle_filled(
-                                egui::pos2(win_x + 20.0, win_y + 15.0),
-                                12.0,
+                            // 2. DEBUG TEXT INSIDE LOOP
+                            ui.painter().text(
+                                egui::pos2(120.0, 80.0 + (*idx as f32 * 30.0)),
+                                egui::Align2::LEFT_TOP,
+                                format!("Win{} Pos: {:.1}, {:.1}", idx, win_x, win_y),
+                                egui::FontId::proportional(20.0),
                                 egui::Color32::WHITE
                             );
-                            
-                            // 5. GREEN MARKER at (win_x, win_y)
+
+                            // 3. GUARANTEED DOT at (200, 200) if loop runs
+                            ui.painter().circle_filled(
+                                egui::pos2(200.0, 200.0),
+                                10.0,
+                                egui::Color32::CYAN
+                            );
+
+                            // 4. GREEN MARKER at win_x, win_y
                             ui.painter().rect_filled(
-                                egui::Rect::from_min_size(egui::pos2(win_x, win_y), egui::vec2(10.0, 10.0)),
+                                egui::Rect::from_min_size(egui::pos2(win_x, win_y), egui::vec2(15.0, 15.0)),
                                 0.0,
                                 egui::Color32::GREEN
                             );
 
-                            // Traffic light buttons (Simplified, always white for now)
+                            // 5. TRAFFIC LIGHTS
                             for i in 0..3 {
-                                let center_x = win_x + 15.0 + (i as f32 * 20.0);
+                                let center_x = win_x + 20.0 + (i as f32 * 25.0);
                                 let center_y = win_y + 15.0;
+                                
                                 ui.painter().circle_filled(
                                     egui::pos2(center_x, center_y),
-                                    6.0,
+                                    8.0,
                                     egui::Color32::WHITE
                                 );
                                 
