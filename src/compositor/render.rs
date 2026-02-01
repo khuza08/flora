@@ -79,9 +79,17 @@ pub fn render_frame(state: &mut FloraState, display: &Rc<RefCell<Display<FloraSt
         }
         #[cfg(feature = "winit")]
         BackendData::Winit { backend, damage_tracker } => {
-            // Force buffer_age = 0 to always trigger full redraw
-            // This bypasses the damage tracking issue on first frame
-            let buffer_age = 0;
+            // Smart damage tracking: detect cursor movement
+            let cursor_moved = state.pointer_location != state.last_pointer_location;
+            
+            // Use buffer_age = 0 when cursor moves (forces redraw of cursor area)
+            // Use real buffer_age when idle (allows damage tracker to skip rendering)
+            let buffer_age = if cursor_moved {
+                state.last_pointer_location = state.pointer_location;
+                0  // Force redraw when cursor moves
+            } else {
+                backend.buffer_age().unwrap_or(0)
+            };
             
             let res = (|| -> Result<(Vec<CustomRenderElement>, Option<usize>)> {
                 let (renderer, mut framebuffer) = backend.bind().map_err(|e| anyhow::anyhow!("Bind failed: {}", e))?;
@@ -99,6 +107,7 @@ pub fn render_frame(state: &mut FloraState, display: &Rc<RefCell<Display<FloraSt
                 )?;
 
                 if pending_close.is_none() {
+                    // Damage tracker will optimize based on buffer_age
                     damage_tracker.render_output(
                         renderer,
                         &mut framebuffer,

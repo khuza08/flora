@@ -79,6 +79,8 @@ pub struct FloraState {
     // Cursor state
     pub cursor_surface: Option<WlSurface>,
     pub cursor_hotspot: Point<i32, Physical>,
+    // Smart damage tracking
+    pub last_pointer_location: Point<f64, Physical>,
 }
 
 impl FloraState {
@@ -115,6 +117,7 @@ impl FloraState {
             start_time: std::time::Instant::now(),
             cursor_surface: None,
             cursor_hotspot: (0, 0).into(),
+            last_pointer_location: (0.0, 0.0).into(),
         }
     }
 }
