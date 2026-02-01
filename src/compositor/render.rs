@@ -141,19 +141,6 @@ pub fn render_frame(state: &mut FloraState, display: &Rc<RefCell<Display<FloraSt
     // Refresh display
     let _ = display.borrow_mut().flush_clients();
     
-    // Send frame callbacks
-    let time = state.start_time.elapsed().as_millis() as u32;
-    for window in &state.windows {
-        with_states(window.toplevel.wl_surface(), |states| {
-            let mut attributes = states.cached_state.get::<SurfaceAttributes>();
-            let current = attributes.current();
-            for callback in current.frame_callbacks.drain(..) {
-                let callback: WlCallback = callback;
-                callback.done(time);
-            }
-        });
-    }
-    
     Ok(())
 }
 

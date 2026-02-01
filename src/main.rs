@@ -251,6 +251,11 @@ fn main() -> Result<()> {
             break;
         }
 
+        // Always send frame callbacks to clients (even when idle)
+        // This allows apps like btop/htop to update without GPU rendering
+        state.send_frame_callbacks(&display);
+
+        // Only render to GPU when there are visual changes
         if state.needs_redraw {
             let _ = render_frame(&mut state, &display);
             state.needs_redraw = false;

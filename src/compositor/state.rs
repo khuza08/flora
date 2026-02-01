@@ -120,6 +120,31 @@ impl FloraState {
             last_pointer_location: (0.0, 0.0).into(),
         }
     }
+    
+    /// Send frame callbacks to all clients without GPU rendering.
+    /// This allows apps like btop/htop to update while maintaining 0% GPU idle.
+    pub fn send_frame_callbacks(&self, display: &std::rc::Rc<std::cell::RefCell<smithay::reexports::wayland_server::Display<FloraState>>>) {
+        use smithay::wayland::compositor::{SurfaceAttributes, with_states};
+        use smithay::reexports::wayland_server::protocol::wl_callback::WlCallback;
+        
+        let time = self.start_time.elapsed().as_millis() as u32;
+        
+        for window in &self.windows {
+            with_states(window.toplevel.wl_surface(), |states| {
+                let mut attributes = states.cached_state.get::<SurfaceAttributes>();
+                let current = attributes.current();
+                
+                // Send signal to client that frame is "done" (can update now)
+                for callback in current.frame_callbacks.drain(..) {
+                    let callback: WlCallback = callback;
+                    callback.done(time);
+                }
+            });
+        }
+        
+        // Ensure callbacks are actually sent to client sockets
+        let _ = display.borrow_mut().flush_clients();
+    }
 }
 
 // Delegate implementations
