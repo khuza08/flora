@@ -79,7 +79,9 @@ pub fn render_frame(state: &mut FloraState, display: &Rc<RefCell<Display<FloraSt
         }
         #[cfg(feature = "winit")]
         BackendData::Winit { backend, damage_tracker } => {
-            let buffer_age = backend.buffer_age().unwrap_or(0);
+            // Force buffer_age = 0 to always trigger full redraw
+            // This bypasses the damage tracking issue on first frame
+            let buffer_age = 0;
             
             let res = (|| -> Result<(Vec<CustomRenderElement>, Option<usize>)> {
                 let (renderer, mut framebuffer) = backend.bind().map_err(|e| anyhow::anyhow!("Bind failed: {}", e))?;
@@ -113,6 +115,10 @@ pub fn render_frame(state: &mut FloraState, display: &Rc<RefCell<Display<FloraSt
                 Ok((_elements, pending_close)) => {
                     if let Some(idx) = pending_close {
                         state.windows[idx].toplevel.send_close();
+                    }
+                    // Submit frame
+                    if let Err(e) = backend.submit(None) {
+                        error!("Winit submit failed: {:?}", e);
                     }
                 }
                 Err(err) => {
