@@ -8,7 +8,8 @@ use smithay::{
         selection::{data_device::DataDeviceState, primary_selection::PrimarySelectionState},
         text_input::TextInputManagerState,
     },
-    input::{SeatState, SeatHandler, Seat},
+    input::{SeatState, SeatHandler, Seat, pointer::CursorImageStatus},
+    wayland::text_input::TextInputSeat,
     output::Output,
     backend::{
         drm::{DrmDevice, DrmDeviceFd, compositor::DrmCompositor},
@@ -19,13 +20,14 @@ use smithay::{
     },
 };
 
+pub use smithay::wayland::compositor::CompositorClientState;
+
 #[cfg(feature = "winit")]
 use smithay::backend::winit::WinitGraphicsBackend;
 
 use smithay_egui::EguiState;
 
 pub use smithay::reexports::wayland_server::backend::ClientData;
-pub use smithay::wayland::compositor::CompositorClientState;
 
 use std::path::PathBuf;
 use crate::compositor::Window;
@@ -74,6 +76,9 @@ pub struct FloraState {
     pub needs_redraw: bool,
     pub egui_state: EguiState,
     pub start_time: std::time::Instant,
+    // Cursor state
+    pub cursor_surface: Option<WlSurface>,
+    pub cursor_hotspot: Point<i32, Physical>,
 }
 
 impl FloraState {
@@ -108,18 +113,19 @@ impl FloraState {
             needs_redraw: false,
             egui_state: EguiState::new(Rectangle::new((0, 0).into(), (1280, 800).into())),
             start_time: std::time::Instant::now(),
+            cursor_surface: None,
+            cursor_hotspot: (0, 0).into(),
         }
     }
 }
 
-// Delegate implementations for basic infrastructure
+// Delegate implementations
 impl SeatHandler for FloraState {
     type KeyboardFocus = WlSurface;
     type PointerFocus = WlSurface;
     type TouchFocus = WlSurface;
     fn seat_state(&mut self) -> &mut SeatState<Self> { &mut self.seat_state }
     fn focus_changed(&mut self, _seat: &Seat<Self>, focused: Option<&WlSurface>) {
-        use smithay::wayland::text_input::TextInputSeat;
         let text_input = self.seat.text_input();
         text_input.set_focus(focused.cloned());
         if focused.is_some() {
@@ -128,10 +134,19 @@ impl SeatHandler for FloraState {
             text_input.leave();
         }
     }
-    fn cursor_image(&mut self, _seat: &Seat<Self>, _image: smithay::input::pointer::CursorImageStatus) {}
+    fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
+        match image {
+            CursorImageStatus::Surface(surface) => {
+                self.cursor_surface = Some(surface);
+            }
+            CursorImageStatus::Hidden => {
+                self.cursor_surface = None;
+            }
+            _ => {}
+        }
+        self.needs_redraw = true;
+    }
 }
-
-smithay::delegate_seat!(FloraState);
 
 impl CompositorHandler for FloraState {
     fn compositor_state(&mut self) -> &mut CompositorState { &mut self.compositor_state }
@@ -145,13 +160,9 @@ impl CompositorHandler for FloraState {
     }
 }
 
-smithay::delegate_compositor!(FloraState);
-
 impl ShmHandler for FloraState {
     fn shm_state(&self) -> &ShmState { &self.shm_state }
 }
-
-smithay::delegate_shm!(FloraState);
 
 impl smithay::wayland::buffer::BufferHandler for FloraState {
     fn buffer_destroyed(&mut self, _buffer: &smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer) {}
@@ -174,6 +185,9 @@ impl smithay::wayland::selection::primary_selection::PrimarySelectionHandler for
 
 impl smithay::wayland::output::OutputHandler for FloraState {}
 
+smithay::delegate_seat!(FloraState);
+smithay::delegate_compositor!(FloraState);
+smithay::delegate_shm!(FloraState);
 smithay::delegate_data_device!(FloraState);
 smithay::delegate_primary_selection!(FloraState);
 smithay::delegate_text_input_manager!(FloraState);

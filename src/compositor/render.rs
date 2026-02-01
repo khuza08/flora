@@ -3,9 +3,9 @@ use smithay::{
         glow::GlowRenderer,
         element::{Kind, surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement}, solid::SolidColorRenderElement, texture::TextureRenderElement},
     },
-    utils::{Point, Physical, Rectangle, Size},
-    wayland::compositor::{with_surface_tree_downward, TraversalAction, SurfaceAttributes},
-    reexports::wayland_server::Display,
+    utils::{Point, Physical, Rectangle, Size, Scale, IsAlive},
+    wayland::compositor::{SurfaceAttributes, with_states},
+    reexports::wayland_server::{Display, protocol::{wl_surface::WlSurface, wl_callback::WlCallback}},
 };
 use smithay::backend::renderer::gles::GlesTexture;
 use smithay_egui::EguiState;
@@ -24,29 +24,25 @@ smithay::backend::renderer::element::render_elements! {
 }
 
 pub fn render_frame(state: &mut FloraState, display: &Rc<RefCell<Display<FloraState>>>) -> Result<()> {
-    let scale = get_output_scale(state);
+    use tracing::debug;
+    debug!("render_frame called, windows: {}", state.windows.len());
     
-    let output_size = match &state.backend_data {
-        BackendData::Drm { .. } => {
-            state.output.as_ref()
-                .and_then(|o| o.current_mode())
-                .map(|m| m.size)
-                .unwrap_or((1280, 800).into())
-        }
-        #[cfg(feature = "winit")]
-        BackendData::Winit { backend, .. } => {
-            backend.window_size()
-        }
-        BackendData::None => return Ok(()),
-    };
-
+    let output_size = state.output.as_ref()
+        .and_then(|o| o.current_mode())
+        .map(|m| m.size)
+        .ok_or_else(|| anyhow::anyhow!("No output mode"))?;
+        
+    let scale = get_output_scale(state);
     let color = [0.1, 0.1, 0.1, 1.0];
 
-    let focused_surface = state.seat.get_keyboard().and_then(|kb| kb.current_focus());
-    let window_data: Vec<(usize, Point<i32, Physical>, Size<i32, Physical>, bool, smithay::backend::renderer::element::Id)> = state.windows.iter().enumerate().map(|(idx, w)| {
+    // Collect window data for egui
+    let window_data: Vec<_> = state.windows.iter().enumerate().map(|(idx, w)| {
         let surface_size = w.toplevel.current_state().size.unwrap_or((800, 600).into());
-        let surface_size_physical = Size::from((surface_size.w as i32, surface_size.h as i32));
-        let is_focused = focused_surface.as_ref().map(|f| f == w.toplevel.wl_surface()).unwrap_or(false);
+        let surface_size_physical = surface_size.to_physical(Scale::from(scale as i32));
+        let is_focused = state.seat.get_keyboard()
+            .and_then(|k| k.current_focus())
+            .map(|s| s == *w.toplevel.wl_surface())
+            .unwrap_or(false);
         (idx, w.location, surface_size_physical, is_focused, w.bar_id.clone())
     }).collect();
 
@@ -60,7 +56,10 @@ pub fn render_frame(state: &mut FloraState, display: &Rc<RefCell<Display<FloraSt
                 &window_data[..],
                 &mut renderer, 
                 output_size, 
-                scale
+                scale,
+                state.pointer_location,
+                state.cursor_surface.as_ref(),
+                state.cursor_hotspot,
             )?;
 
             if let Some(idx) = pending_close {
@@ -91,7 +90,10 @@ pub fn render_frame(state: &mut FloraState, display: &Rc<RefCell<Display<FloraSt
                     &window_data[..],
                     renderer, 
                     output_size, 
-                    scale
+                    scale,
+                    state.pointer_location,
+                    state.cursor_surface.as_ref(),
+                    state.cursor_hotspot,
                 )?;
 
                 if pending_close.is_none() {
@@ -101,42 +103,42 @@ pub fn render_frame(state: &mut FloraState, display: &Rc<RefCell<Display<FloraSt
                         buffer_age,
                         &elements,
                         color,
-                    ).map_err(|e| anyhow::anyhow!("Winit render failed: {}", e))?;
+                    ).map_err(|e| anyhow::anyhow!("Damage tracker failed: {:?}", e))?;
                 }
                 
                 Ok((elements, pending_close))
             })();
-            
+
             match res {
-                Ok((_, pending_close_idx)) => {
-                    if let Some(idx) = pending_close_idx {
+                Ok((_elements, pending_close)) => {
+                    if let Some(idx) = pending_close {
                         state.windows[idx].toplevel.send_close();
                     }
-                    if let Err(e) = backend.submit(None) {
-                        error!("Winit Submit Error: {:?}", e);
-                    }
                 }
-                Err(e) => {
-                    error!("Winit Rendering Error: {:?}", e);
+                Err(err) => {
+                    error!("Winit rendering failed: {:?}", err);
                 }
             }
         }
-        BackendData::None => {}
-    }
-    
-    let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u32;
-    for window in &state.windows {
-        with_surface_tree_downward(window.toplevel.wl_surface(), (), |_, _, _| TraversalAction::DoChildren(()), |_, states, _| {
-            let mut guard = states.cached_state.get::<SurfaceAttributes>();
-            for callback in guard.current().frame_callbacks.drain(..) { 
-                let c: smithay::reexports::wayland_server::protocol::wl_callback::WlCallback = callback;
-                let _ = c.done(time); 
-            }
-        }, |_, _, _| true);
+        _ => {}
     }
 
+    // Refresh display
     let _ = display.borrow_mut().flush_clients();
-    state.needs_redraw = false;
+    
+    // Send frame callbacks
+    let time = state.start_time.elapsed().as_millis() as u32;
+    for window in &state.windows {
+        with_states(window.toplevel.wl_surface(), |states| {
+            let mut attributes = states.cached_state.get::<SurfaceAttributes>();
+            let current = attributes.current();
+            for callback in current.frame_callbacks.drain(..) {
+                let callback: WlCallback = callback;
+                callback.done(time);
+            }
+        });
+    }
+    
     Ok(())
 }
 
@@ -147,46 +149,55 @@ fn gather_elements(
     renderer: &mut GlowRenderer,
     output_size: Size<i32, Physical>,
     scale: f64,
+    pointer_location: Point<f64, Physical>,
+    cursor_surface: Option<&WlSurface>,
+    cursor_hotspot: Point<i32, Physical>,
 ) -> Result<(Vec<CustomRenderElement>, Option<usize>)> {
     let mut elements = Vec::new();
     let mut pending_close = None;
 
     let egui_element = egui_state.render(
         |ctx| {
-            egui::Area::new(egui::Id::new("flora_ui"))
+            egui::Area::new("flora_overlay".into())
                 .fixed_pos(egui::pos2(0.0, 0.0))
                 .show(ctx, |ui| {
-                    ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
-                        ui.add_space(10.0);
-                        ui.label(egui::RichText::new("Flora Compositor").color(egui::Color32::from_gray(200)).size(14.0));
-                    });
+                    for (idx, pos, size, is_focused, _) in window_data {
+                        let logical_pos = pos.to_logical(Scale::from(scale as i32));
+                        let logical_size = size.to_logical(Scale::from(scale as i32));
+                        
+                        let rect = egui::Rect::from_min_size(
+                            egui::pos2(logical_pos.x as f32, logical_pos.y as f32),
+                            egui::vec2(logical_size.w as f32, TITLE_BAR_HEIGHT as f32)
+                        );
 
-                    for (idx, pos, _size, _is_focused, bar_id) in window_data {
+                        let color = if *is_focused {
+                            egui::Color32::from_rgba_unmultiplied(40, 40, 40, 200)
+                        } else {
+                            egui::Color32::from_rgba_unmultiplied(30, 30, 30, 180)
+                        };
+
+                        ui.painter().rect_filled(rect, 5.0, color);
+
+                        // Window title buttons
                         let btn_radius = 6.0;
-                        let spacing = 8.0;
-                        let start_x_offset = 12.0;
-                        let center_y_offset = (TITLE_BAR_HEIGHT as f32 / scale as f32) / 2.0;
+                        let btn_padding = 10.0;
+                        let btn_y = logical_pos.y as f32 + TITLE_BAR_HEIGHT as f32 / 2.0;
+                        
+                        let colors = [
+                            egui::Color32::from_rgb(255, 95, 87),   // Close
+                            egui::Color32::from_rgb(255, 189, 46),  // Minimize
+                            egui::Color32::from_rgb(40, 201, 64),   // Maximize
+                        ];
 
-                        let logical_pos = egui::pos2(pos.x as f32 / scale as f32, pos.y as f32 / scale as f32);
-
-                        for i in 0..3 {
-                            let (color, hover_color) = match i {
-                                0 => (egui::Color32::from_rgb(255, 95, 87), egui::Color32::from_rgb(255, 120, 110)), 
-                                1 => (egui::Color32::from_rgb(255, 189, 46), egui::Color32::from_rgb(255, 210, 100)),
-                                2 => (egui::Color32::from_rgb(40, 201, 64), egui::Color32::from_rgb(80, 230, 100)),  
-                                _ => (egui::Color32::GRAY, egui::Color32::LIGHT_GRAY),
-                            };
-                            
-                            let center = egui::pos2(
-                                logical_pos.x + start_x_offset + i as f32 * (btn_radius * 2.0 + spacing),
-                                logical_pos.y + center_y_offset
+                        for (i, &base_color) in colors.iter().enumerate() {
+                            let center = egui::pos2(logical_pos.x as f32 + btn_padding + (i as f32 * 20.0), btn_y);
+                            let response = ui.interact(
+                                egui::Rect::from_center_size(center, egui::vec2(btn_radius * 2.0, btn_radius * 2.0)),
+                                egui::Id::new(format!("btn_{}_{}", idx, i)),
+                                egui::Sense::click()
                             );
 
-                            let interaction_id = egui::Id::new(("btn", bar_id, i));
-                            let rect = egui::Rect::from_center_size(center, egui::vec2(btn_radius * 2.2, btn_radius * 2.2));
-                            let response = ui.interact(rect, interaction_id, egui::Sense::click());
-                            
-                            let final_color = if response.hovered() { hover_color } else { color };
+                            let final_color = if response.hovered() { base_color } else { base_color.gamma_multiply(0.8) };
                             ui.painter().circle_filled(center, btn_radius, final_color);
 
                             if response.clicked() && i == 0 {
@@ -227,6 +238,22 @@ fn gather_elements(
             [0.15, 0.15, 0.15, 1.0],
             Kind::Unspecified
         )));
+    }
+    
+    // Cursor rendering
+    if let Some(surface) = cursor_surface {
+        if surface.alive() {
+            // cursor_hotspot is already in Physical coordinates from Wayland protocol
+            let render_pos = pointer_location - cursor_hotspot.to_f64();
+
+            elements.extend(render_elements_from_surface_tree::<GlowRenderer, CustomRenderElement>(
+                renderer,
+                surface,
+                render_pos.to_i32_round(),
+                1.0, 1.0,
+                Kind::Cursor,
+            ));
+        }
     }
 
     Ok((elements, pending_close))

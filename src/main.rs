@@ -25,7 +25,8 @@ use std::{time::Duration, rc::Rc, cell::RefCell, os::unix::io::{AsRawFd, Borrowe
 use tracing::{info, warn, error};
 use anyhow::Result;
 
-use crate::compositor::state::{FloraState, FloraClientData, CompositorClientState, BackendData};
+use crate::compositor::state::{FloraState, FloraClientData, BackendData};
+pub use smithay::wayland::compositor::CompositorClientState;
 use crate::compositor::render::render_frame;
 use crate::input::FloraInputEvent;
 use crate::input::handler::handle_input_event;
